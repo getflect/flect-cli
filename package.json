@@ -1,17 +1,40 @@
 {
   "name": "@getflect/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Flect CLI — flect.toml → control plane, and local development",
   "type": "module",
-  "bin": { "flect": "./dist/index.js" },
+  "bin": {
+    "flect": "./dist/index.js"
+  },
   "main": "./dist/index.js",
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=20" },
-  "keywords": ["flect", "cli", "deploy", "createEnv", "libsql", "valkey", "s3", "paas"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "flect",
+    "cli",
+    "deploy",
+    "createEnv",
+    "libsql",
+    "valkey",
+    "s3",
+    "paas"
+  ],
   "homepage": "https://github.com/getflect/flect-cli#readme",
-  "repository": { "type": "git", "url": "git+https://github.com/getflect/flect-cli.git" },
-  "bugs": { "url": "https://github.com/getflect/flect-cli/issues" },
-  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/getflect/flect-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/getflect/flect-cli/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "dev": "tsx src/index.ts",
