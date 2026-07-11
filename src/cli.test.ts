@@ -368,6 +368,35 @@ describe("deployApps", () => {
     expect(declared[0]).toMatchObject({ name: "clave-api", public: true, domain: "clave-api.up.flect.run" })
   })
 
+  it("declares EVERY app before deploying any (so a consumer listed first still resolves its provider)", async () => {
+    // ownwares (consumer) is listed BEFORE eventstore-service (its provider).
+    const project = parseFlectToml(
+      `[app]\nname="s"\n` +
+        `[[apps]]\nname="ownwares"\nimage="img:1"\npublic=true\n` +
+        `[[apps]]\nname="eventstore-service"\nimage="img:2"\n` +
+        `[[services]]\nbinding="EVENTSTORE"\napp="eventstore-service"`,
+    )
+    const calls: string[] = []
+    const client = {
+      declareApp: async (input: { name: string }) => {
+        calls.push(`declare:${input.name}`)
+        return { id: `app-${input.name}`, name: input.name, status: "declared" }
+      },
+      deployApp: async (id: string) => {
+        calls.push(`deploy:${id}`)
+        return { status: "deployed", jobId: `flect-${id}`, hostname: null, failureReason: null }
+      },
+    } as unknown as BrokerClient
+
+    await deployApps(client, project)
+
+    const firstDeploy = calls.findIndex((c) => c.startsWith("deploy:"))
+    const lastDeclare = calls.map((c) => c.startsWith("declare:")).lastIndexOf(true)
+    // every declare precedes every deploy → provider is known when consumer deploys
+    expect(lastDeclare).toBeLessThan(firstDeploy)
+    expect(calls.filter((c) => c.startsWith("declare:"))).toEqual(["declare:ownwares", "declare:eventstore-service"])
+  })
+
   it("marks an app failed when the broker reports a deploy failure", async () => {
     const project = parseFlectToml(`[app]\nname="x"\n[[apps]]\nname="api"\nimage="img:1"\npublic=true`)
     const client = {

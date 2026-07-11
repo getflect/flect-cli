@@ -27,9 +27,16 @@ export interface AppDeployStep {
  */
 export async function deployApps(client: BrokerClient, project: FlectProject): Promise<AppDeployStep[]> {
   const steps: AppDeployStep[] = []
+
+  // Pass 1 — declare EVERY app first. Deploy composes each app's env by looking
+  // up its `[[services]]` siblings (findAppByName); a sibling that isn't
+  // declared yet resolves to null and its `<BINDING>_SERVICE_URL` is silently
+  // dropped. Declaring the whole graph up front makes deploy order irrelevant:
+  // a consumer listed before its provider still gets the provider's URL.
+  const declared: Array<{ app: (typeof project.apps)[number]; id: string }> = []
   for (const app of project.apps) {
     try {
-      const declared = await client.declareApp({
+      const d = await client.declareApp({
         name: app.name,
         image: app.image,
         port: app.port,
@@ -40,7 +47,16 @@ export async function deployApps(client: BrokerClient, project: FlectProject): P
         cpuMhz: app.cpuMhz,
         memoryMb: app.memoryMb,
       })
-      const result = await client.deployApp(declared.id, {
+      declared.push({ app, id: d.id })
+    } catch (err) {
+      steps.push({ app: app.name, status: "failed", detail: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  // Pass 2 — deploy the declared apps; every sibling URL now resolves.
+  for (const { app, id } of declared) {
+    try {
+      const result = await client.deployApp(id, {
         image: app.image,
         vars: project.vars,
         services: project.services,
