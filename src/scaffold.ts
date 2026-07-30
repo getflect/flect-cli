@@ -5,9 +5,11 @@ export function flectTomlTemplate(name: string): string {
 runtime = "node"
 port    = 3000
 
-# Where this project lives in the scope tree (workspace/project/environment).
-# \`flect deploy\` resolves this path and CREATES any missing scope, so the
-# manifest alone describes where the project deploys.
+# Where this project lives in the scope tree (org → workspace → project → env).
+# The deploy target is your ACTIVE CONTEXT, not this field: create the tree with
+# \`flect proj create --org <org> --ws <ws> --name ${name} --slug ${name}\` and
+# select it with \`flect use <org>/<ws>/${name}\`. \`scope\` is reserved for a
+# future org-service path resolver and is currently ignored by \`flect deploy\`.
 scope   = "${name}/main/prod"
 
 # Deployment region — only "eu" exists today (the default); more regions later.

@@ -113,73 +113,6 @@ describe("parseFlectToml", () => {
   })
 })
 
-describe("ensureScopePath — deploy realizes the toml scope", () => {
-  function fakeScopeClient(
-    existing: Array<{ id: string; parentId: string | null; slug: string; name: string; kind: string }>,
-  ) {
-    const rows = [...existing]
-    const created: Array<{ kind: string; slug: string; parentId?: string }> = []
-    return {
-      created,
-      listScopes: async () => rows as never,
-      createScope: async (input: { kind: string; name: string; slug: string; parentId?: string }) => {
-        const row = {
-          id: `scope-${input.slug}`,
-          parentId: input.parentId ?? null,
-          slug: input.slug,
-          name: input.name,
-          kind: input.kind,
-        }
-        rows.push(row)
-        created.push({ kind: input.kind, slug: input.slug, parentId: input.parentId })
-        return row as never
-      },
-    }
-  }
-
-  it("creates every missing segment with the right kind and parent", async () => {
-    const client = fakeScopeClient([])
-    const { ensureScopePath } = await import("./scope-path.js")
-    const r = await ensureScopePath(client, "acme/notes/prod")
-    expect(r.scopeId).toBe("scope-prod")
-    expect(client.created).toEqual([
-      { kind: "workspace", slug: "acme", parentId: undefined },
-      { kind: "project", slug: "notes", parentId: "scope-acme" },
-      { kind: "environment", slug: "prod", parentId: "scope-notes" },
-    ])
-    expect(r.created).toHaveLength(3)
-  })
-
-  it("reuses existing segments and only creates the missing tail", async () => {
-    const client = fakeScopeClient([
-      { id: "ws-1", parentId: null, slug: "acme", name: "acme", kind: "workspace" },
-      { id: "pr-1", parentId: "ws-1", slug: "notes", name: "notes", kind: "project" },
-    ])
-    const { ensureScopePath } = await import("./scope-path.js")
-    const r = await ensureScopePath(client, "acme/notes/prod")
-    expect(r.scopeId).toBe("scope-prod")
-    expect(client.created).toEqual([{ kind: "environment", slug: "prod", parentId: "pr-1" }])
-  })
-
-  it("is idempotent when the whole path exists", async () => {
-    const client = fakeScopeClient([
-      { id: "ws-1", parentId: null, slug: "acme", name: "acme", kind: "workspace" },
-      { id: "pr-1", parentId: "ws-1", slug: "notes", name: "notes", kind: "project" },
-      { id: "env-1", parentId: "pr-1", slug: "prod", name: "prod", kind: "environment" },
-    ])
-    const { ensureScopePath } = await import("./scope-path.js")
-    const r = await ensureScopePath(client, "acme/notes/prod")
-    expect(r.scopeId).toBe("env-1")
-    expect(r.created).toHaveLength(0)
-    expect(client.created).toHaveLength(0)
-  })
-
-  it("rejects paths deeper than the tree", async () => {
-    const { ensureScopePath } = await import("./scope-path.js")
-    await expect(ensureScopePath(fakeScopeClient([]), "a/b/c/d")).rejects.toThrowError(/1–3 segments/)
-  })
-})
-
 describe("generateLocalConfig", () => {
   it("maps bindings to ${ENV}-driven connections, never literal secrets", () => {
     const config = generateLocalConfig(parseFlectToml(TOML))
@@ -231,28 +164,6 @@ describe("maskToken", () => {
     expect(maskToken("dev:acme:scope-1")).toBe("dev:acme:scope-1")
     expect(maskToken(undefined)).toBe("(unset)")
     expect(maskToken("supersecrettoken")).toMatch(/^supe….+/)
-  })
-})
-
-describe("scope paths", () => {
-  const scopes = [
-    { id: "s-ws", kind: "workspace" as const, parentId: null, name: "saas", slug: "saas", status: "active" },
-    { id: "s-proj", kind: "project" as const, parentId: "s-ws", name: "scanopy", slug: "scanopy", status: "active" },
-    { id: "s-dev", kind: "environment" as const, parentId: "s-proj", name: "dev", slug: "dev", status: "active" },
-    { id: "s-prod", kind: "environment" as const, parentId: "s-proj", name: "prod", slug: "prod", status: "active" },
-  ]
-
-  it("resolves a slug path to a scope id", async () => {
-    const { resolveScopePath, scopePathOf } = await import("./scope-path.js")
-    expect(resolveScopePath(scopes, "saas/scanopy/dev")).toBe("s-dev")
-    expect(resolveScopePath(scopes, "saas")).toBe("s-ws")
-    expect(scopePathOf(scopes, "s-prod")).toBe("saas/scanopy/prod")
-    expect(scopePathOf(scopes, "unknown")).toBe("unknown")
-  })
-
-  it("throws a helpful error for a missing segment", async () => {
-    const { resolveScopePath } = await import("./scope-path.js")
-    expect(() => resolveScopePath(scopes, "saas/nope/dev")).toThrowError(/scope "nope" not found/)
   })
 })
 

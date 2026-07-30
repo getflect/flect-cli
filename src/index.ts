@@ -1,27 +1,57 @@
 #!/usr/bin/env node
 /**
- * Flect CLI (RFC-0010) — a thin client over the control plane, plus local dev.
+ * Flect CLI — identity & tenancy (delegated to the baseworks plane) plus the
+ * control-plane deploy surface.
  *
+ * Identity / tenancy (auth · iam · org-service):
+ *   flect login | logout        sign in / out (SSO device flow)
+ *   flect iam whoami            who am I
+ *   flect org | ws | proj | env  the org → workspace → project → env tree
+ *   flect use <path> | ls | ps   switch / show the active scope
+ *   flect access …              PDP (role / check)
+ *
+ * Control plane (broker):
  *   flect init                 scaffold flect.toml
  *   flect dev                  generate flect.local.json so createEnv() runs locally
  *   flect bindings             list bindings declared in flect.toml
  *   flect db|kv|store create   create a resource (also: list, status, delete)
- *   flect deploy               realize flect.toml against the broker (provision + bind + apps)
+ *   flect deploy               realize flect.toml against the broker
  *   flect resolve DB           inspect a binding's manifest (secrets redacted)
- *   flect config set broker …  persist API base / token in ~/.flect/config.json
+ *   flect config set broker …  persist broker URL in ~/.flect/config.json
  */
 
 import { writeFile, readFile, mkdir, access, appendFile } from "node:fs/promises"
 import { basename } from "node:path"
-import { spawn } from "node:child_process"
 import { Command } from "commander"
 import { loadFlectToml } from "./config.js"
 import { generateLocalConfig } from "./local.js"
-import { BrokerClient, scopeIdFromToken, withTokenScope, tokenInfo, type BindingKind } from "./broker-client.js"
-import { ensureScopePath, resolveScopePath, scopePathOf } from "./scope-path.js"
+import { BrokerClient, type BindingKind } from "./broker-client.js"
 import { createResource } from "./resource.js"
 import { deploy, deployApps, type DeployState } from "./deploy.js"
+import { deployPage } from "./page.js"
 import { flectTomlTemplate, GITIGNORE_LINES, redactConnection } from "./scaffold.js"
+import { addAuthCommands } from "@baseworks/auth/cli"
+import { buildIamCommand } from "@baseworks/iam/cli"
+import {
+  addGlobalCommands,
+  buildOrgCommand,
+  buildWsCommand,
+  buildProjCommand,
+  buildEnvCommand,
+  buildAccessCommand,
+} from "@baseworks/org/cli"
+import {
+  ctx,
+  iamHttp,
+  orgHttp,
+  getAuthBase,
+  saveIdentityToken,
+  clearIdentity,
+  getBrokerScope,
+  getBrokerScopePath,
+  getContextOrgId,
+  APP_BASE,
+} from "./lib/context.js"
 import {
   loadCliConfig,
   saveCliConfig,
@@ -33,15 +63,6 @@ import {
 
 const exists = (p: string) => access(p).then(() => true).catch(() => false)
 
-/** Open a URL in the default browser (best-effort, cross-platform). */
-function openBrowser(url: string): void {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open"
-  try {
-    spawn(cmd, [url], { stdio: "ignore", detached: true }).unref()
-  } catch {
-    /* user can click the printed URL */
-  }
-}
 const die = (msg: string): never => {
   console.error(`error: ${msg}`)
   process.exit(1)
@@ -51,7 +72,7 @@ const die = (msg: string): never => {
 async function brokerConfig(opts: { broker?: string; token?: string }) {
   const { brokerUrl, token } = await resolveConnection(opts)
   if (!token) {
-    die("no token — run `flect config set token <dev:tenant:scopeId>`, set FLECT_TOKEN, or pass --token")
+    die("no token — run `flect login`, set FLECT_TOKEN, or pass --token")
   }
   return { brokerUrl, token: token! }
 }
@@ -59,8 +80,37 @@ async function brokerConfig(opts: { broker?: string; token?: string }) {
 const program = new Command()
 program
   .name("flect")
-  .description("Flect platform CLI — deploy apps and resolve bindings through the control plane")
-  .version("0.1.1")
+  .description("Flect platform CLI — identity, tenancy, and deploys through the control plane")
+  .version("0.2.0")
+  // Required so options after a subcommand (e.g. `ws create --org acme`) bind to
+  // the subcommand — the org/ws/proj/env noun commands enable positional options.
+  .enablePositionalOptions()
+
+// ── Identity & tenancy plane (login · iam · org/ws/proj/env · use/ls/ps) ──────
+// Delegated to the shared baseworks capability plane: login/logout from auth,
+// identity from iam, the org tree + context + PDP from org. One identity token
+// (from `flect login`) is accepted across all three. Config + bases live in
+// ./lib/context.ts (FLECT_URL gateway, or FLECT_{AUTH,IAM,ORG}_URL per service).
+const orgDeps = { http: orgHttp, ctx, appBase: APP_BASE, cliName: "flect" }
+
+addAuthCommands(program, {
+  authBase: getAuthBase,
+  cliName: "flect",
+  onToken: saveIdentityToken,
+  onLogout: clearIdentity,
+})
+program.addCommand(buildIamCommand({ http: iamHttp, cliName: "flect" }))
+addGlobalCommands(program, orgDeps)
+program.addCommand(buildOrgCommand(orgDeps))
+program.addCommand(buildWsCommand(orgDeps))
+program.addCommand(buildProjCommand(orgDeps))
+program.addCommand(buildEnvCommand(orgDeps))
+program.addCommand(buildAccessCommand(orgDeps))
+program.addCommand(
+  new Command("whoami").description("show the current user (alias: flect iam whoami)").action(async () => {
+    await program.parseAsync(["", "", "iam", "whoami"])
+  }),
+)
 
 program
   .command("init")
@@ -112,31 +162,20 @@ program
   .description("realize flect.toml against the broker (provision resources + bind)")
   .option("--broker <url>", "broker URL (default: FLECT_BROKER_URL)")
   .option("--token <token>", "runtime token (default: FLECT_TOKEN)")
-  .option("--scope <scopeId|path>", "target scope (default: flect.toml scope, then the active scope)")
+  .option("--scope <scopeId>", "target org-service scope id (default: the active scope from `flect use`)")
   .action(async (opts: { broker?: string; token?: string; scope?: string }) => {
     const project = await loadFlectToml().catch((e) => die(e.message))
     const cfg = await brokerConfig(opts)
-    // Scope precedence: --scope flag > flect.toml `scope` > config's active
-    // scope > dev-token segment. A slug PATH (flag containing "/", or the toml
-    // value) resolves against the scope tree and CREATES any missing segment —
-    // the manifest says where the project lives; deploy makes it true.
-    const active = (await loadCliConfig()).scope
-    let scopeId: string
-    const pathSource = opts.scope && opts.scope.includes("/") ? opts.scope : !opts.scope ? project.scope : undefined
-    if (pathSource) {
-      const ensured = await ensureScopePath(new BrokerClient(cfg), pathSource).catch((e) =>
-        die(e instanceof Error ? e.message : String(e)),
-      )
-      scopeId = ensured.scopeId
-      const madeNew = ensured.created.length > 0 ? ` (created ${ensured.created.join(" → ")})` : ""
-      console.log(`scope: ${pathSource}${madeNew}`)
-    } else {
-      scopeId = opts.scope ?? active ?? scopeIdFromToken(cfg.token)
-    }
+    // The deploy target is the active org-service scope (set by `flect use`);
+    // --scope overrides with an explicit scope id. Tenancy is delegated to
+    // org-service, so the broker treats this id as opaque.
+    const scopeId = opts.scope ?? getBrokerScope()
+    if (!scopeId) return die("no target scope — run `flect use <org/ws/proj/env>` first (or pass --scope)")
+    console.log(`scope: ${getBrokerScopePath() ?? scopeId}`)
     if (project.region) console.log(`region: ${project.region}`)
     // The client must carry the scope so app deploys (which read X-Flect-Scope)
     // land in the same scope as the provisioned bindings.
-    const client = new BrokerClient({ ...cfg, scope: scopeId })
+    const client = new BrokerClient({ ...cfg, scope: scopeId, orgId: getContextOrgId() })
 
     const steps = await deploy(client, project, scopeId, {
       loadState: async () => {
@@ -177,23 +216,15 @@ function withConn(cmd: Command): Command {
   return cmd
     .option("--broker <url>", "broker URL (default: config/env)")
     .option("--token <token>", "runtime token (default: config/env)")
-    .option("--scope <scopeId>", "target scope (default: derived from token)")
+    .option("--scope <scopeId>", "target org-service scope id (default: active scope from `flect use`)")
 }
 
 type ConnOpts = { broker?: string; token?: string; scope?: string }
 async function connect(opts: ConnOpts): Promise<{ client: BrokerClient; scopeId: string }> {
   const cfg = await brokerConfig(opts)
-  const file = await loadCliConfig()
-  // Active scope: flag > config.scope > dev-token segment (best effort).
-  let scopeId = opts.scope ?? file.scope
-  if (!scopeId) {
-    try {
-      scopeId = scopeIdFromToken(cfg.token)
-    } catch {
-      scopeId = ""
-    }
-  }
-  return { client: new BrokerClient({ ...cfg, scope: scopeId || undefined }), scopeId }
+  // Active scope: --scope flag > the org-service scope set by `flect use`.
+  const scopeId = opts.scope ?? getBrokerScope() ?? ""
+  return { client: new BrokerClient({ ...cfg, scope: scopeId || undefined, orgId: getContextOrgId() }), scopeId }
 }
 
 /** Register a `flect <alias>` group with create/list/status/delete for a binding kind. */
@@ -254,167 +285,12 @@ addResourceCommands("db", "database", "database")
 addResourceCommands("kv", "kv", "kv")
 addResourceCommands("store", "storage", "storage")
 
-// --- Scopes: the org's workspace/project/environment tree -------------------
-
-const scope = program.command("scope").description("manage scopes (workspace / project / environment)")
-
-withConn(scope.command("create <kind> <name>"))
-  .description("create a scope; kind = workspace | project | environment")
-  .option("--parent <scopeId>", "parent scope (e.g. project under a workspace)")
-  .option("--slug <slug>", "slug (default: name)")
-  .action(async (kind: string, name: string, opts: ConnOpts & { parent?: string; slug?: string }) => {
-    if (!["workspace", "project", "environment"].includes(kind)) {
-      die(`kind must be workspace | project | environment (got "${kind}")`)
-    }
-    const { client } = await connect(opts)
-    try {
-      const s = await client.createScope({
-        kind: kind as "workspace" | "project" | "environment",
-        name,
-        slug: opts.slug ?? name.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
-        parentId: opts.parent,
-      })
-      console.log(`✓ ${s.kind} "${s.name}" → ${s.id}`)
-      console.log(`  activate it: flect use ${s.id}`)
-    } catch (err) {
-      die(err instanceof Error ? err.message : String(err))
-    }
-  })
-
-withConn(scope.command("list"))
-  .description("list the scope tree (active scope marked)")
-  .action(async (opts: ConnOpts) => {
-    const { client, scopeId } = await connect(opts)
-    const rows = await client.listScopes().catch((e) => die(e.message))
-    if (rows.length === 0) return void console.log("(no scopes — create one: flect scope create project myapp)")
-    // Render as a tree: roots first, children indented under their parent.
-    const byParent = new Map<string | null, typeof rows>()
-    for (const s of rows) {
-      const list = byParent.get(s.parentId) ?? []
-      list.push(s)
-      byParent.set(s.parentId, list)
-    }
-    const render = (parentId: string | null, depth: number) => {
-      for (const s of byParent.get(parentId) ?? []) {
-        const active = s.id === scopeId ? "  ← active" : ""
-        console.log(`${"  ".repeat(depth)}${s.kind.padEnd(12)} ${s.name.padEnd(16)} ${s.id}${active}`)
-        render(s.id, depth + 1)
-      }
-    }
-    render(null, 0)
-  })
-
-withConn(program.command("use <scope>"))
-  .description("switch the active scope — by slug path (saas/scanopy/dev) or scope id")
-  .action(async (ref: string, opts: ConnOpts) => {
-    const cfg = await loadCliConfig()
-    if (!cfg.token) die("no token in config — run `flect login` or `flect config set token …` first")
-    try {
-      let scopeId = ref
-      let path = ref
-      if (!ref.startsWith("scope-")) {
-        const { client } = await connect(opts)
-        const scopes = await client.listScopes()
-        scopeId = resolveScopePath(scopes, ref)
-        path = scopePathOf(scopes, scopeId)
-      }
-      // Active scope travels as X-Flect-Scope; for dev tokens also rewrite the
-      // token's scope segment so both auth modes agree.
-      cfg.scope = scopeId
-      if (cfg.token!.startsWith("dev:")) cfg.token = withTokenScope(cfg.token!, scopeId)
-      await saveCliConfig(cfg)
-      console.log(`✓ active scope → ${path} (${scopeId})`)
-    } catch (err) {
-      die(err instanceof Error ? err.message : String(err))
-    }
-  })
-
-program
-  .command("login")
-  .description("sign in via SSO and store an identity token in ~/.flect/config.json")
-  .option("--auth <url>", "auth base (default: config.auth or the broker origin)")
-  .action(async (opts: { auth?: string }) => {
-    const cfg = await loadCliConfig()
-    const { brokerUrl } = await resolveConnection({})
-    const authBase = (opts.auth ?? cfg.auth ?? brokerUrl).replace(/\/+$/, "")
-    try {
-      const start = (await (await fetch(`${authBase}/v1/auth/start`)).json()) as {
-        state: string
-        url: string
-        expires_in: number
-      }
-      console.log("opening your browser to sign in…")
-      console.log(`  ${start.url}`)
-      openBrowser(start.url)
-
-      process.stdout.write("waiting for approval")
-      const deadline = Date.now() + (start.expires_in ?? 600) * 1000
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2000))
-        process.stdout.write(".")
-        const poll = (await (await fetch(`${authBase}/v1/auth/poll/${start.state}`)).json()) as {
-          status: string
-          token?: string
-        }
-        if (poll.status === "done" && poll.token) {
-          process.stdout.write("\n")
-          cfg.token = poll.token
-          cfg.auth = authBase
-          await saveCliConfig(cfg)
-          console.log("✓ signed in — token saved")
-          console.log("  next: `flect scope list` then `flect use <scope>`")
-          return
-        }
-        if (poll.status === "expired") die("login expired — run `flect login` again")
-      }
-      die("login timed out")
-    } catch (err) {
-      die(err instanceof Error ? err.message : String(err))
-    }
-  })
-
-program
-  .command("logout")
-  .description("clear the stored token")
-  .action(async () => {
-    const cfg = await loadCliConfig()
-    delete cfg.token
-    delete cfg.scope
-    await saveCliConfig(cfg)
-    console.log("✓ signed out")
-  })
-
-withConn(program.command("ps"))
-  .description("show the active context (scope, token, api, config)")
-  .action(async (opts: ConnOpts) => {
-    const { brokerUrl, token } = await resolveConnection(opts)
-    let contextLine = "(no scope)"
-    if (token) {
-      try {
-        const { client, scopeId } = await connect(opts)
-        const scopes = await client.listScopes().catch(() => [])
-        const tenant = tokenInfo(token).tenant ?? "?"
-        const where = scopeId ? scopePathOf(scopes, scopeId) : "(no active scope — flect use)"
-        contextLine = `${tenant} / ${where}  ● active`
-      } catch {
-        contextLine = "(scope unresolved)"
-      }
-    }
-    console.log(`  context   ${contextLine}`)
-    console.log(`  token     ${maskToken(token)}`)
-    console.log(`  api       ${brokerUrl}`)
-    console.log(`  config    ${CONFIG_PATH}`)
-  })
-
 withConn(program.command("apps"))
   .description("list the apps deployed in the active scope")
   .action(async (opts: ConnOpts) => {
     const { client, scopeId } = await connect(opts)
-    const [scopes, apps] = await Promise.all([
-      client.listScopes().catch(() => []),
-      client.listApps().catch((e) => die(e.message)),
-    ])
-    console.log(`scope: ${scopePathOf(scopes, scopeId)} (${scopeId})`)
+    const apps = await client.listApps().catch((e) => die(e.message))
+    console.log(`scope: ${getBrokerScopePath() ?? scopeId ?? "(none — run flect use)"}`)
     if (apps.length === 0) return void console.log("  (no apps — deploy one with `flect deploy`)")
     for (const a of apps) {
       const route = a.public
@@ -427,22 +303,30 @@ withConn(program.command("apps"))
     }
   })
 
-withConn(program.command("whoami"))
-  .description("show who you are and where you're pointed")
-  .action(async (opts: ConnOpts) => {
-    const { brokerUrl, token } = await resolveConnection(opts)
-    if (!token) die("no token — run `flect login`")
-    const info = tokenInfo(token!)
-    const isDev = token!.startsWith("dev:")
-    console.log(`broker   : ${brokerUrl}`)
-    console.log(`tenant   : ${info.tenant ?? "?"}`)
-    console.log(`identity : ${info.identity ?? "?"}${isDev ? "  (dev token)" : "  (SSO)"}`)
+const page = program.command("page").description("static pages — serve a built site over Caddy on Nomad")
+
+page
+  .command("deploy")
+  .description("serve the [page] static site from flect.toml")
+  .option("--nomad <url>", "Nomad address (default: NOMAD_ADDR)")
+  .option("--dc <dc>", "Nomad datacenter (default: NOMAD_DATACENTER or eu)")
+  .action(async (opts: { nomad?: string; dc?: string }) => {
+    const project = await loadFlectToml().catch((e) => die(e.message))
+    if (!project.page) die('no [page] block in flect.toml (add [page] with dir = "./dist")')
+    const nomadAddr = opts.nomad ?? process.env["NOMAD_ADDR"] ?? process.env["FLECT_NOMAD_ADDR"]
+    if (!nomadAddr) return die("no Nomad address — pass --nomad or set NOMAD_ADDR")
     try {
-      const { client, scopeId } = await connect(opts)
-      const scopes = await client.listScopes().catch(() => [])
-      console.log(`scope    : ${scopeId ? `${scopePathOf(scopes, scopeId)} (${scopeId})` : "(none — run `flect use <scope>`)"}`)
-    } catch {
-      console.log(`scope    : ?`)
+      const res = await deployPage(project.page!, {
+        nomadAddr,
+        datacenter: opts.dc ?? process.env["NOMAD_DATACENTER"] ?? "eu",
+        networkMode: (process.env["FLECT_NOMAD_NETWORK_MODE"] as "host" | "bridge") ?? "bridge",
+      })
+      console.log(`✓ page "${project.page!.name}" deployed`)
+      console.log(`  job    ${res.jobId}`)
+      console.log(`  url    https://${res.hostname}`)
+      console.log("  (local: reach it at the job's host port — `nomad job status <job>`)")
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
     }
   })
 
@@ -450,9 +334,9 @@ const config = program.command("config").description("manage CLI config (~/.flec
 
 config
   .command("set <key> <value>")
-  .description("set a config value: `flect config set broker <url>` or `token <tok>`")
+  .description("set a config value: `flect config set gatewayUrl <url>` (drives the whole plane), `broker <url>`, or `token <tok>`")
   .action(async (key: string, value: string) => {
-    if (!["broker", "token", "auth", "scope"].includes(key)) die(`unknown key "${key}" (use: broker | token | auth | scope)`)
+    if (!["gatewayUrl", "broker", "token"].includes(key)) die(`unknown key "${key}" (use: gatewayUrl | broker | token)`)
     const cfg = await loadCliConfig()
     cfg[key as keyof CliConfig] = value
     await saveCliConfig(cfg)
@@ -465,11 +349,13 @@ config
   .description("print config (token masked)")
   .action(async (key?: string) => {
     const cfg = await loadCliConfig()
+    if (key === "gatewayUrl") return void console.log(cfg.gatewayUrl ?? "(unset)")
     if (key === "broker") return void console.log(cfg.broker ?? "(unset)")
     if (key === "token") return void console.log(maskToken(cfg.token))
-    console.log(`broker : ${cfg.broker ?? "(unset)"}`)
-    console.log(`token  : ${maskToken(cfg.token)}`)
-    console.log(`file   : ${CONFIG_PATH}`)
+    console.log(`gateway : ${cfg.gatewayUrl ?? "(unset)"}`)
+    console.log(`broker  : ${cfg.broker ?? "(unset)"}`)
+    console.log(`token   : ${maskToken(cfg.token)}`)
+    console.log(`file    : ${CONFIG_PATH}`)
   })
 
 config
@@ -493,7 +379,7 @@ program
   .option("--broker <url>", "broker URL (default: FLECT_BROKER_URL)")
   .option("--token <token>", "runtime token (default: FLECT_TOKEN)")
   .action(async (name: string, opts: { broker?: string; token?: string }) => {
-    const client = new BrokerClient(await brokerConfig(opts))
+    const client = new BrokerClient({ ...(await brokerConfig(opts)), orgId: getContextOrgId() })
     try {
       const { manifest } = await client.resolve(name)
       const safe = { ...manifest, connection: redactConnection((manifest["connection"] ?? {}) as Record<string, unknown>) }

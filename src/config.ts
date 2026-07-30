@@ -35,6 +35,16 @@ export interface ServiceDecl {
   app: string
 }
 
+/** A static page (`[page]`): serve a built site directory over Caddy. */
+export interface PageDecl {
+  /** Page name (defaults to the project name). */
+  name: string
+  /** Local directory of built static files to serve (e.g. "./dist", "./public"). */
+  dir: string
+  /** Custom domain (in addition to the generated hostname). */
+  domain?: string
+}
+
 export interface FlectProject {
   name: string
   /** Shared public domain for the app group (`[app].domain`). */
@@ -54,6 +64,8 @@ export interface FlectProject {
   apps: AppDecl[]
   vars: Record<string, string>
   services: ServiceDecl[]
+  /** Optional static page (`[page]`). */
+  page?: PageDecl
 }
 
 interface RawEntry {
@@ -166,6 +178,14 @@ export function parseFlectToml(text: string): FlectProject {
     throw new FlectTomlError(`region "${region}" is not available yet — only "eu" exists today`)
   }
 
+  const pageSection = doc["page"] as Record<string, unknown> | undefined
+  let page: PageDecl | undefined
+  if (pageSection) {
+    const dir = str(pageSection["dir"])
+    if (!dir) throw new FlectTomlError('[page]: "dir" (the built static site directory) is required')
+    page = { name: str(pageSection["name"]) ?? name, dir, ...(str(pageSection["domain"]) ? { domain: str(pageSection["domain"])! } : {}) }
+  }
+
   return {
     name,
     domain: str(appSection["domain"]),
@@ -177,6 +197,7 @@ export function parseFlectToml(text: string): FlectProject {
     apps,
     vars: varsOf(doc["vars"]),
     services: serviceEntries(doc["services"]),
+    ...(page ? { page } : {}),
   }
 }
 

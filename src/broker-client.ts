@@ -13,6 +13,9 @@ export interface BrokerConfig {
   token: string
   /** Active scope, sent as `X-Flect-Scope` (identity JWTs are not scope-bound). */
   scope?: string
+  /** Active org id, sent as `X-Org-Id` — the broker's tenant when the identity
+   *  token carries no org_id (tenancy delegated to org-service). */
+  orgId?: string
 }
 
 export interface ProviderRow {
@@ -113,6 +116,7 @@ export class BrokerClient {
       headers: {
         Authorization: `Bearer ${this.cfg.token}`,
         ...(this.cfg.scope ? { "X-Flect-Scope": this.cfg.scope } : {}),
+        ...(this.cfg.orgId ? { "X-Org-Id": this.cfg.orgId } : {}),
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),

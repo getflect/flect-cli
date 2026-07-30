@@ -11,6 +11,12 @@ import { join } from "node:path"
 export interface CliConfig {
   /** Broker/API base URL, e.g. https://api-test.flect.cloud. */
   broker?: string
+  /**
+   * Single gateway origin that fronts the whole plane (auth/iam/org at
+   * /v1/*, broker at /). Set it once and both the identity-plane bases and the
+   * broker URL derive from it. See lib/context.ts `gatewayBase`.
+   */
+  gatewayUrl?: string
   /** Legacy key from the previous CLI; read as a fallback for `broker`. */
   apiBase?: string
   /** Runtime token (identity JWT after `flect login`, or dev:<tenant>:<scopeId>). */
@@ -54,8 +60,18 @@ export async function resolveConnection(opts: {
   token?: string
 }): Promise<{ brokerUrl: string; token?: string }> {
   const file = await loadCliConfig()
-  const brokerUrl =
-    opts.broker ?? process.env["FLECT_BROKER_URL"] ?? file.broker ?? file.apiBase ?? "http://localhost:8787"
+  // The gateway origin fronts the broker at `/`, so a single `gatewayUrl` (or
+  // FLECT_URL) drives both the identity plane and the broker — no need to set
+  // `broker` separately against prod. Explicit broker still wins.
+  const brokerUrl = (
+    opts.broker ??
+    process.env["FLECT_BROKER_URL"] ??
+    process.env["FLECT_URL"] ??
+    file.broker ??
+    file.apiBase ??
+    file.gatewayUrl ??
+    "http://localhost:8787"
+  ).replace(/\/+$/, "")
   const token = opts.token ?? process.env["FLECT_TOKEN"] ?? file.token
   return { brokerUrl, token }
 }
