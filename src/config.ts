@@ -35,12 +35,24 @@ export interface ServiceDecl {
   app: string
 }
 
-/** A static page (`[page]`): serve a built site directory over Caddy. */
+/**
+ * A static page (`[page]`): a git repository the broker clones, builds and
+ * serves (RFC-0018). The build runs in the cluster, not here — the CLI only
+ * declares the source, so nothing about the page depends on this machine.
+ */
 export interface PageDecl {
   /** Page name (defaults to the project name). */
   name: string
-  /** Local directory of built static files to serve (e.g. "./dist", "./public"). */
-  dir: string
+  /** Git repository to build, e.g. "https://github.com/dotlabshq/flect-docs". */
+  repo: string
+  /** Branch, tag or commit sha to build (default "main"). */
+  ref?: string
+  /** Builder template — "docs" for the Starlight path; omit to run the repo's own build. */
+  template?: string
+  /** Site title, passed to the template. */
+  title?: string
+  /** GitHub URL shown in the template's header. */
+  github?: string
   /** Custom domain (in addition to the generated hostname). */
   domain?: string
 }
@@ -147,8 +159,11 @@ export function parseFlectToml(text: string): FlectProject {
   const doc = parse(text) as Record<string, unknown>
   const appSection = (doc["app"] as Record<string, unknown> | undefined) ?? {}
 
-  const name = str(doc["name"]) ?? str(appSection["name"])
-  if (!name) throw new FlectTomlError('a project name is required (top-level "name" or [app].name)')
+  // A pages-only repo has nothing but `[page]`, so its name stands in for the
+  // project's — no dummy top-level `name` just to satisfy the parser.
+  const pageName = str((doc["page"] as Record<string, unknown> | undefined)?.["name"])
+  const name = str(doc["name"]) ?? str(appSection["name"]) ?? pageName
+  if (!name) throw new FlectTomlError('a project name is required (top-level "name", [app].name or [page].name)')
 
   const bindings = [
     ...entries(doc["databases"], "database"),
@@ -181,9 +196,24 @@ export function parseFlectToml(text: string): FlectProject {
   const pageSection = doc["page"] as Record<string, unknown> | undefined
   let page: PageDecl | undefined
   if (pageSection) {
-    const dir = str(pageSection["dir"])
-    if (!dir) throw new FlectTomlError('[page]: "dir" (the built static site directory) is required')
-    page = { name: str(pageSection["name"]) ?? name, dir, ...(str(pageSection["domain"]) ? { domain: str(pageSection["domain"])! } : {}) }
+    const repo = str(pageSection["repo"])
+    if (!repo) {
+      throw new FlectTomlError(
+        str(pageSection["dir"])
+          ? '[page]: "dir" is gone — pages are built from git now. Replace it with repo = "https://github.com/you/site"'
+          : '[page]: "repo" (the git repository to build) is required',
+      )
+    }
+    const opt = (key: string) => (str(pageSection[key]) ? { [key]: str(pageSection[key])! } : {})
+    page = {
+      name: str(pageSection["name"]) ?? name,
+      repo,
+      ...opt("ref"),
+      ...opt("template"),
+      ...opt("title"),
+      ...opt("github"),
+      ...opt("domain"),
+    }
   }
 
   return {

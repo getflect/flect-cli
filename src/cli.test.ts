@@ -111,6 +111,30 @@ describe("parseFlectToml", () => {
   it("rejects unknown regions (only eu exists today)", () => {
     expect(() => parseFlectToml(`name="a"\nregion="us"`)).toThrowError(/only "eu"/)
   })
+
+  it("parses a git-sourced [page], defaulting its name to the project", () => {
+    const p = parseFlectToml(
+      `name="site"\n[page]\nrepo="https://github.com/acme/docs"\nref="next"\ntemplate="docs"\ndomain="docs.flect.cloud"`,
+    )
+    expect(p.page).toEqual({
+      name: "site",
+      repo: "https://github.com/acme/docs",
+      ref: "next",
+      template: "docs",
+      domain: "docs.flect.cloud",
+    })
+  })
+
+  it("lets a pages-only repo take its project name from [page]", () => {
+    const p = parseFlectToml(`[page]\nname="flect-docs"\nrepo="https://github.com/dotlabshq/flect-docs"`)
+    expect(p.name).toBe("flect-docs")
+    expect(p.page?.name).toBe("flect-docs")
+  })
+
+  it("requires [page].repo, and says what to do with the old dir = …", () => {
+    expect(() => parseFlectToml(`name="a"\n[page]\ntitle="x"`)).toThrowError(/"repo".*is required/)
+    expect(() => parseFlectToml(`name="a"\n[page]\ndir="./dist"`)).toThrowError(/built from git now/)
+  })
 })
 
 describe("generateLocalConfig", () => {

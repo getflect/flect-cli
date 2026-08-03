@@ -48,6 +48,31 @@ export interface AppRow {
   jobId: string | null
 }
 
+export interface PageRow {
+  id: string
+  name: string
+  status: string
+  repo: string | null
+  ref: string
+  template: string | null
+  domain: string | null
+  hostname: string | null
+  jobId: string | null
+  currentBuildId: string | null
+  lastBuildId: string | null
+  failureReason: string | null
+}
+
+export interface PageBuildRow {
+  buildId: string
+  ref: string
+  status: "building" | "succeeded" | "failed"
+  commit?: string | null
+  reason?: string | null
+  /** True for the build `current` points at — not necessarily the newest one. */
+  current: boolean
+}
+
 export interface ResourceRow {
   id: string
   kind: BindingKind
@@ -202,5 +227,47 @@ export class BrokerClient {
     input: { image?: string; vars?: Record<string, string>; services?: Array<{ binding: string; app: string }> },
   ): Promise<{ status: string; jobId: string | null; hostname: string | null; failureReason: string | null }> {
     return this.call("POST", `/v1/apps/${encodeURIComponent(appId)}/deploy`, input)
+  }
+
+  listPages(): Promise<PageRow[]> {
+    return this.call<PageRow[]>("GET", "/v1/pages")
+  }
+
+  /** Reading a page settles a finished build, so `status` is never stale. */
+  getPage(pageId: string): Promise<PageRow> {
+    return this.call<PageRow>("GET", `/v1/pages/${encodeURIComponent(pageId)}`)
+  }
+
+  /** Idempotent by name within the active scope, exactly like `declareApp`. */
+  declarePage(input: {
+    name: string
+    repo?: string
+    ref?: string
+    template?: string
+    title?: string
+    github?: string
+    domain?: string
+  }): Promise<PageRow> {
+    return this.call<PageRow>("POST", "/v1/pages", input)
+  }
+
+  deployPage(pageId: string, input: { ref?: string } = {}): Promise<PageRow> {
+    return this.call<PageRow>("POST", `/v1/pages/${encodeURIComponent(pageId)}/deploy`, input)
+  }
+
+  pageBuilds(pageId: string): Promise<PageBuildRow[]> {
+    return this.call<PageBuildRow[]>("GET", `/v1/pages/${encodeURIComponent(pageId)}/builds`)
+  }
+
+  pageBuildLog(pageId: string, buildId: string): Promise<{ log: string }> {
+    return this.call("GET", `/v1/pages/${encodeURIComponent(pageId)}/builds/${encodeURIComponent(buildId)}/logs`)
+  }
+
+  rollbackPage(pageId: string, toBuildId?: string): Promise<PageRow> {
+    return this.call<PageRow>("POST", `/v1/pages/${encodeURIComponent(pageId)}/rollback`, toBuildId ? { toBuildId } : {})
+  }
+
+  stopPage(pageId: string): Promise<PageRow> {
+    return this.call<PageRow>("POST", `/v1/pages/${encodeURIComponent(pageId)}/stop`, {})
   }
 }

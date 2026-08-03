@@ -16,6 +16,7 @@
  *   flect bindings             list bindings declared in flect.toml
  *   flect db|kv|store create   create a resource (also: list, status, delete)
  *   flect deploy               realize flect.toml against the broker
+ *   flect page deploy|ls|…     build and serve a static site from git
  *   flect resolve DB           inspect a binding's manifest (secrets redacted)
  *   flect config set broker …  persist broker URL in ~/.flect/config.json
  */
@@ -25,10 +26,9 @@ import { basename } from "node:path"
 import { Command } from "commander"
 import { loadFlectToml } from "./config.js"
 import { generateLocalConfig } from "./local.js"
-import { BrokerClient, type BindingKind } from "./broker-client.js"
+import { BrokerClient, type BindingKind, type PageRow } from "./broker-client.js"
 import { createResource } from "./resource.js"
 import { deploy, deployApps, type DeployState } from "./deploy.js"
-import { deployPage } from "./page.js"
 import { flectTomlTemplate, GITIGNORE_LINES, redactConnection } from "./scaffold.js"
 import { addAuthCommands } from "@baseworks/auth/cli"
 import { buildIamCommand } from "@baseworks/iam/cli"
@@ -303,28 +303,156 @@ withConn(program.command("apps"))
     }
   })
 
-const page = program.command("page").description("static pages — serve a built site over Caddy on Nomad")
+// `flect page` talks to the broker, never to Nomad: the broker clones, builds
+// and publishes the site, and is the only party holding cluster credentials
+// (RFC-0018). Nothing here depends on a local build or a reachable NOMAD_ADDR.
+const page = program.command("page").description("static pages — built from git and served by the broker")
 
-page
-  .command("deploy")
-  .description("serve the [page] static site from flect.toml")
-  .option("--nomad <url>", "Nomad address (default: NOMAD_ADDR)")
-  .option("--dc <dc>", "Nomad datacenter (default: NOMAD_DATACENTER or eu)")
-  .action(async (opts: { nomad?: string; dc?: string }) => {
-    const project = await loadFlectToml().catch((e) => die(e.message))
-    if (!project.page) die('no [page] block in flect.toml (add [page] with dir = "./dist")')
-    const nomadAddr = opts.nomad ?? process.env["NOMAD_ADDR"] ?? process.env["FLECT_NOMAD_ADDR"]
-    if (!nomadAddr) return die("no Nomad address — pass --nomad or set NOMAD_ADDR")
+/** Resolve a page by name or id within the active scope. */
+async function findPage(client: BrokerClient, ref: string): Promise<PageRow> {
+  const pages = await client.listPages().catch((e) => die(e.message))
+  const hit = pages.find((p) => p.id === ref || p.name === ref)
+  if (!hit) die(`no page "${ref}" in this scope — \`flect page ls\` to see them`)
+  return hit!
+}
+
+/** The page a command acts on: an explicit ref, else the `[page]` block. */
+async function targetPage(client: BrokerClient, ref: string | undefined): Promise<PageRow> {
+  if (ref) return findPage(client, ref)
+  const project = await loadFlectToml().catch((e) => die(e.message))
+  if (!project.page) die('no page given and no [page] block in flect.toml (add [page] with repo = "https://github.com/you/site")')
+  return findPage(client, project.page!.name)
+}
+
+const pageRoute = (p: PageRow) =>
+  p.hostname ? `https://${p.hostname}${p.domain ? `  (custom: https://${p.domain})` : ""}` : "(not served yet)"
+
+withConn(page.command("deploy [page]"))
+  .description("build and publish the [page] site from flect.toml (or a named page)")
+  .option("--ref <ref>", "branch, tag or commit to build (default: flect.toml, else main)")
+  .action(async (ref: string | undefined, opts: ConnOpts & { ref?: string }) => {
+    const { client } = await connect(opts)
     try {
-      const res = await deployPage(project.page!, {
-        nomadAddr,
-        datacenter: opts.dc ?? process.env["NOMAD_DATACENTER"] ?? "eu",
-        networkMode: (process.env["FLECT_NOMAD_NETWORK_MODE"] as "host" | "bridge") ?? "bridge",
-      })
-      console.log(`✓ page "${project.page!.name}" deployed`)
-      console.log(`  job    ${res.jobId}`)
-      console.log(`  url    https://${res.hostname}`)
-      console.log("  (local: reach it at the job's host port — `nomad job status <job>`)")
+      // Declare-or-update first so flect.toml stays the source of truth, exactly
+      // like `flect deploy` does for apps.
+      let target: PageRow
+      if (ref) {
+        target = await findPage(client, ref)
+      } else {
+        const project = await loadFlectToml().catch((e) => die(e.message))
+        if (!project.page) die('no [page] block in flect.toml (add [page] with repo = "https://github.com/you/site")')
+        target = await client.declarePage({ ...project.page!, ...(opts.ref ? { ref: opts.ref } : {}) })
+      }
+
+      const started = await client.deployPage(target.id, opts.ref ? { ref: opts.ref } : {})
+      console.log(`→ page "${started.name}" building from ${started.repo ?? "?"}@${started.ref} (build ${started.lastBuildId})`)
+
+      const done = await waitForBuild(client, started.id)
+      if (done.status === "failed") {
+        console.error(`✗ build failed: ${done.failureReason ?? "unknown"}`)
+        console.error(`  logs: flect page logs ${done.name}`)
+        process.exitCode = 1
+        return
+      }
+      console.log(`✓ page "${done.name}" live`)
+      console.log(`  build  ${done.currentBuildId}`)
+      console.log(`  url    ${pageRoute(done)}`)
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+/** Poll until the build settles. The broker settles it on read, so this is just waiting. */
+async function waitForBuild(client: BrokerClient, pageId: string, timeoutMs = 20 * 60_000): Promise<PageRow> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const p = await client.getPage(pageId)
+    if (p.status !== "building") return p
+    if (Date.now() > deadline) die(`timed out waiting for the build (still running — \`flect page status ${p.name}\`)`)
+    await new Promise((r) => setTimeout(r, 5_000))
+  }
+}
+
+withConn(page.command("ls"))
+  .description("list the pages in the active scope")
+  .action(async (opts: ConnOpts) => {
+    const { client, scopeId } = await connect(opts)
+    const pages = await client.listPages().catch((e) => die(e.message))
+    console.log(`scope: ${getBrokerScopePath() ?? scopeId ?? "(none — run flect use)"}`)
+    if (pages.length === 0) return void console.log("  (no pages — declare one with `flect page deploy`)")
+    for (const p of pages) {
+      console.log(`  ${p.name.padEnd(16)} ${p.status.padEnd(10)} ${pageRoute(p)}`)
+      if (p.repo) console.log(`  ${"".padEnd(16)} ${"".padEnd(10)} ${p.repo}@${p.ref}`)
+    }
+  })
+
+withConn(page.command("status [page]"))
+  .description("show one page and its build history")
+  .action(async (ref: string | undefined, opts: ConnOpts) => {
+    const { client } = await connect(opts)
+    try {
+      const found = await targetPage(client, ref)
+      const p = await client.getPage(found.id)
+      console.log(`page   ${p.name}  (${p.id})`)
+      console.log(`status ${p.status}${p.failureReason ? `  — ${p.failureReason}` : ""}`)
+      console.log(`source ${p.repo ?? "?"}@${p.ref}${p.template ? `  template=${p.template}` : ""}`)
+      console.log(`url    ${pageRoute(p)}`)
+      const builds = await client.pageBuilds(p.id)
+      if (builds.length === 0) return void console.log("builds (none yet)")
+      console.log("builds")
+      for (const b of builds) {
+        const mark = b.current ? "*" : " "
+        const note = b.reason ?? b.commit ?? ""
+        console.log(`  ${mark} ${b.buildId.padEnd(14)} ${b.status.padEnd(10)} ${b.ref.padEnd(12)} ${note}`)
+      }
+      console.log("  (* = the build currently served)")
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+withConn(page.command("logs [page]"))
+  .description("print a build's log (default: the most recent build)")
+  .option("--build <buildId>", "a specific build id (default: the newest)")
+  .action(async (ref: string | undefined, opts: ConnOpts & { build?: string }) => {
+    const { client } = await connect(opts)
+    try {
+      const p = await targetPage(client, ref)
+      const buildId = opts.build ?? p.lastBuildId
+      if (!buildId) die(`page "${p.name}" has no builds yet`)
+      const { log } = await client.pageBuildLog(p.id, buildId!)
+      // Nomad garbage-collects finished allocations, so an old build's log is
+      // simply gone — say that rather than printing nothing.
+      if (!log) return void console.log(`(no log for build ${buildId} — the allocation was garbage-collected)`)
+      process.stdout.write(log.endsWith("\n") ? log : `${log}\n`)
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+withConn(page.command("rollback [page]"))
+  .description("switch the served content to a previous build (no rebuild)")
+  .option("--build <buildId>", "the build to serve (default: the last successful one before the current)")
+  .action(async (ref: string | undefined, opts: ConnOpts & { build?: string }) => {
+    const { client } = await connect(opts)
+    try {
+      const p = await targetPage(client, ref)
+      const rolled = await client.rollbackPage(p.id, opts.build)
+      console.log(`✓ page "${rolled.name}" now serving build ${rolled.currentBuildId}`)
+      console.log(`  url    ${pageRoute(rolled)}`)
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+withConn(page.command("stop [page]"))
+  .description("stop serving a page (its builds are kept)")
+  .action(async (ref: string | undefined, opts: ConnOpts) => {
+    const { client } = await connect(opts)
+    try {
+      const p = await targetPage(client, ref)
+      const stopped = await client.stopPage(p.id)
+      console.log(`✓ page "${stopped.name}" → ${stopped.status}`)
     } catch (err) {
       die(err instanceof Error ? err.message : String(err))
     }
