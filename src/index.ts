@@ -303,6 +303,116 @@ withConn(program.command("apps"))
     }
   })
 
+// ─── flect events ───────────────────────────────────────────────────────────
+//
+// The control plane is event-sourced, so a deploy's history is not a log file
+// somebody wrote — it is the state itself. One command reads it, because the
+// log is one thing: apps, pages, resources and bindings are stream-id prefixes
+// within it, not separate logs. Filters narrow it; there is no `flect app
+// events`.
+
+/** `page-59117479-13da-…` → `page-59117479`: enough to tell streams apart. */
+const shortStream = (id: string) => {
+  const dash = id.indexOf("-")
+  if (dash < 0) return id
+  return `${id.slice(0, dash)}-${id.slice(dash + 1).split("-")[0]}`
+}
+
+/** Payload keys worth showing first; the rest follow in their own order. */
+const PAYLOAD_KEYS = [
+  "name", "ref", "buildId", "commit", "jobId", "hostname", "domain", "status",
+  "reason", "failureReason", "kind", "externalRef", "secretRef", "bindingId",
+  "resourceId", "providerId", "image", "scopeId",
+]
+
+/** A one-line digest of an event's payload — primitives only, four at most. */
+function summarize(payload: Record<string, unknown>): string {
+  const keys = Object.keys(payload)
+  const ordered = [
+    ...PAYLOAD_KEYS.filter((k) => k in payload),
+    ...keys.filter((k) => !PAYLOAD_KEYS.includes(k)),
+  ]
+  const parts: string[] = []
+  for (const k of ordered) {
+    const v = payload[k]
+    if (v === null || v === undefined || typeof v === "object") continue
+    const s = String(v)
+    parts.push(`${k}=${s.length > 44 ? `${s.slice(0, 41)}…` : s}`)
+    if (parts.length === 4) break
+  }
+  return parts.join("  ")
+}
+
+withConn(program.command("events"))
+  .description("read the control plane's event log for the active scope")
+  .option("--app <name>", "only this app's stream")
+  .option("--page <name>", "only this page's stream")
+  .option("--stream <id>", "only this stream (app-…, page-…, resource-…, binding-…)")
+  .option("--correlation <id>", "every event of one logical flow")
+  .option("--type <types>", "event type(s), comma-separated (e.g. PageBuildFailed)")
+  .option("--since <seq>", "only events after this sequence number")
+  .option("-n, --limit <n>", "how many of the newest events to show (default 50)")
+  .option("--all", "the whole org, including provider and credential streams")
+  .option("--json", "raw event rows, one JSON array")
+  .action(
+    async (
+      opts: ConnOpts & {
+        app?: string
+        page?: string
+        stream?: string
+        correlation?: string
+        type?: string
+        since?: string
+        limit?: string
+        all?: boolean
+        json?: boolean
+      },
+    ) => {
+      const { client, scopeId } = await connect(opts)
+      const num = (v: string | undefined, what: string) => {
+        if (v === undefined) return undefined
+        const n = Number(v)
+        if (!Number.isFinite(n)) die(`--${what} expects a number, got "${v}"`)
+        return n
+      }
+
+      // `--app`/`--page` are conveniences over `--stream`: names are what people
+      // remember, stream ids are what the log is keyed by.
+      let stream = opts.stream
+      if (opts.app) {
+        const apps = await client.listApps().catch((e) => die(e.message))
+        const hit = apps.find((a) => a.name === opts.app || a.id === opts.app)
+        if (!hit) die(`no app "${opts.app}" in this scope — \`flect apps\` to see them`)
+        stream = hit!.id
+      }
+      if (opts.page) stream = (await findPage(client, opts.page)).id
+
+      const rows = await client
+        .listEvents({
+          ...(stream ? { stream } : {}),
+          ...(opts.correlation ? { correlation: opts.correlation } : {}),
+          ...(opts.type ? { type: opts.type } : {}),
+          ...(num(opts.since, "since") !== undefined ? { since: num(opts.since, "since")! } : {}),
+          ...(num(opts.limit, "limit") !== undefined ? { limit: num(opts.limit, "limit")! } : {}),
+          ...(opts.all ? { all: true } : {}),
+        })
+        .catch((e) => die(e.message))
+
+      if (opts.json) return void console.log(JSON.stringify(rows, null, 2))
+
+      console.log(`scope: ${opts.all ? "(whole org)" : (getBrokerScopePath() ?? scopeId ?? "(none — run flect use)")}`)
+      if (rows.length === 0) return void console.log("  (no events match)")
+      for (const e of rows) {
+        const at = e.at.replace("T", " ").slice(0, 19)
+        console.log(
+          `  ${String(e.seq).padStart(6)}  ${at}  ${e.type.padEnd(26)} ${shortStream(e.streamId).padEnd(22)} ${summarize(e.payload)}`,
+        )
+      }
+      const last = rows[rows.length - 1]!
+      console.log(`\n  newer events: flect events --since ${last.seq}`)
+    },
+  )
+
 // `flect page` talks to the broker, never to Nomad: the broker clones, builds
 // and publishes the site, and is the only party holding cluster credentials
 // (RFC-0018). Nothing here depends on a local build or a reachable NOMAD_ADDR.

@@ -1,6 +1,6 @@
 {
   "name": "@getflect/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Flect CLI — flect.toml → control plane, and local development",
   "type": "module",
   "bin": {

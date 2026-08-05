@@ -73,6 +73,21 @@ export interface PageBuildRow {
   current: boolean
 }
 
+/** One row of the control plane's event log (`flect events`). */
+export interface EventRow {
+  /** Position in the tenant's log — monotonic, and what `--since` takes. */
+  seq: number
+  at: string
+  type: string
+  streamId: string
+  streamType: string
+  version: number
+  actor: string
+  correlationId?: string
+  causationId?: string
+  payload: Record<string, unknown>
+}
+
 export interface ResourceRow {
   id: string
   kind: BindingKind
@@ -174,6 +189,26 @@ export class BrokerClient {
 
   listApps(): Promise<AppRow[]> {
     return this.call<AppRow[]>("GET", "/v1/apps")
+  }
+
+  /** The event log, oldest first. Scoped to the active scope unless `all`. */
+  listEvents(q: {
+    stream?: string
+    correlation?: string
+    type?: string
+    since?: number
+    limit?: number
+    all?: boolean
+  } = {}): Promise<EventRow[]> {
+    const qs = new URLSearchParams()
+    if (q.stream) qs.set("stream", q.stream)
+    if (q.correlation) qs.set("correlation", q.correlation)
+    if (q.type) qs.set("type", q.type)
+    if (q.since !== undefined) qs.set("since", String(q.since))
+    if (q.limit !== undefined) qs.set("limit", String(q.limit))
+    if (q.all) qs.set("all", "1")
+    const s = qs.toString()
+    return this.call<EventRow[]>("GET", `/v1/events${s ? `?${s}` : ""}`)
   }
 
   requestResource(input: { kind: BindingKind; scopeId: string; providerId: string; name: string }): Promise<{ id: string }> {
