@@ -253,6 +253,8 @@ export class BrokerClient {
     replicas?: number
     cpuMhz?: number
     memoryMb?: number
+    /** `null` disables health checking; omit for the default check. */
+    health?: { path?: string; intervalSec?: number; timeoutSec?: number } | null
   }): Promise<{ id: string; name: string; status: string }> {
     return this.call("POST", "/v1/apps", input)
   }

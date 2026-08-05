@@ -19,6 +19,20 @@ export interface BindingDecl {
   migrationsDir?: string
 }
 
+/**
+ * HTTP health check for an app. Consul probes it; while it fails Traefik keeps
+ * the app out of its backend and sibling discovery renders empty, so an app
+ * that answers health on a path other than `/healthz` must say so here.
+ */
+export interface HealthDecl {
+  /** Path to probe, e.g. "/api/health". Default "/healthz". */
+  path?: string
+  /** Seconds between probes. Default 15. */
+  intervalSec?: number
+  /** Seconds before a probe is considered failed. Default 3. */
+  timeoutSec?: number
+}
+
 export interface AppDecl {
   name: string
   image?: string
@@ -28,6 +42,12 @@ export interface AppDecl {
   replicas?: number
   cpuMhz?: number
   memoryMb?: number
+  /**
+   * `health = "/api/health"` (path only), a `[apps.health]` table, or
+   * `health = false` to switch checking off for a workload that serves no
+   * HTTP. Absent = the default check.
+   */
+  health?: HealthDecl | false
 }
 
 export interface ServiceDecl {
@@ -132,8 +152,39 @@ function appEntries(value: unknown): AppDecl[] {
       replicas: num(raw["replicas"]),
       cpuMhz: num(raw["cpuMhz"]),
       memoryMb: num(raw["memoryMb"]),
+      ...(raw["health"] !== undefined ? { health: healthOf(raw["health"], raw["name"]) } : {}),
     }
   })
+}
+
+/** "30s" / "2m" / a bare number of seconds. */
+function durationSec(v: unknown, app: string, key: string): number | undefined {
+  if (v === undefined) return undefined
+  if (typeof v === "number" && Number.isInteger(v) && v > 0) return v
+  const m = typeof v === "string" ? /^(\d+)\s*(s|m)?$/.exec(v.trim()) : null
+  if (!m) throw new FlectTomlError(`[[apps]] "${app}": health.${key} must be seconds or a duration like "30s"`)
+  return Number(m[1]) * (m[2] === "m" ? 60 : 1)
+}
+
+/** `false` | "/path" | { path, interval, timeout } → a normalized declaration. */
+function healthOf(v: unknown, app: string): HealthDecl | false {
+  if (v === false) return false
+  if (v === true) return {}
+  const raw: Record<string, unknown> =
+    typeof v === "string" ? { path: v } : typeof v === "object" && v !== null ? (v as Record<string, unknown>) : (() => {
+      throw new FlectTomlError(`[[apps]] "${app}": health must be a path, a table, or false`)
+    })()
+  const path = str(raw["path"])
+  if (path !== undefined && !path.startsWith("/")) {
+    throw new FlectTomlError(`[[apps]] "${app}": health path must start with "/" (got "${path}")`)
+  }
+  const intervalSec = durationSec(raw["interval"], app, "interval")
+  const timeoutSec = durationSec(raw["timeout"], app, "timeout")
+  return {
+    ...(path !== undefined ? { path } : {}),
+    ...(intervalSec !== undefined ? { intervalSec } : {}),
+    ...(timeoutSec !== undefined ? { timeoutSec } : {}),
+  }
 }
 
 function serviceEntries(value: unknown): ServiceDecl[] {

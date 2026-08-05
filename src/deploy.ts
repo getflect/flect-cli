@@ -46,6 +46,8 @@ export async function deployApps(client: BrokerClient, project: FlectProject): P
         replicas: app.replicas,
         cpuMhz: app.cpuMhz,
         memoryMb: app.memoryMb,
+        // `false` in flect.toml means "no check at all"; absent means default.
+        ...(app.health !== undefined ? { health: app.health === false ? null : app.health } : {}),
       })
       declared.push({ app, id: d.id })
     } catch (err) {

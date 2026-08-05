@@ -67,6 +67,41 @@ describe("parseFlectToml", () => {
     ])
   })
 
+  it("parses every health form: path, table, and off", () => {
+    const p = parseFlectToml(`
+name="a"
+[[apps]]
+name="api"
+health="/api/health"
+[[apps]]
+name="slow"
+[apps.health]
+path="/status"
+interval="30s"
+timeout=5
+[[apps]]
+name="worker"
+health=false
+[[apps]]
+name="plain"
+`)
+    expect(p.apps.map((a) => a.health)).toEqual([
+      { path: "/api/health" },
+      { path: "/status", intervalSec: 30, timeoutSec: 5 },
+      false,
+      undefined, // absent = the broker's default check
+    ])
+  })
+
+  it("rejects a health path that is not a path, and a bogus duration", () => {
+    expect(() => parseFlectToml(`name="a"\n[[apps]]\nname="api"\nhealth="healthz"`)).toThrowError(
+      /must start with "\//,
+    )
+    expect(() => parseFlectToml(`name="a"\n[[apps]]\nname="api"\n[apps.health]\ninterval="soon"`)).toThrowError(
+      /health.interval/,
+    )
+  })
+
   it("requires a top-level name", () => {
     expect(() => parseFlectToml(`[[kv]]\nbinding="X"\nname="y"`)).toThrowError(FlectTomlError)
   })
