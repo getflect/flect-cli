@@ -16,10 +16,10 @@ install: build
     @echo "installed: flect → {{dist}}"
     @flect --version
 
-patch: build
+patch:
     npm version patch --no-git-tag-version
 
-minor: build
+minor:
     npm version minor --no-git-tag-version
 
 # Typecheck, unit tests, build. `publish` runs this first.
@@ -35,7 +35,19 @@ e2e url="http://localhost:3300" secret_file=(justfile_directory() + "/../basewor
     pnpm build
     FLECT_E2E_URL="{{url}}" FLECT_E2E_JWT_SECRET="$(grep '^JWT_SECRET=' '{{secret_file}}' | cut -d= -f2-)" pnpm exec vitest run src/e2e.test.ts
 
-publish: check
+# Refuse a version npm already has, before building anything. The repo once
+# said 0.2.1 while npm had 0.2.3.
+unpublished:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    v=$(node -p "require('./package.json').version")
+    if npm view "@getflect/cli@$v" version --prefer-online 2>/dev/null | grep -q .; then
+      echo "✗ @getflect/cli@$v is already on npm (latest: $(npm view @getflect/cli version --prefer-online)). Bump first: just patch" >&2
+      exit 1
+    fi
+    echo "✓ @getflect/cli@$v is not on npm yet"
+
+publish: unpublished check
     npm publish --access public
 
 release-patch:
