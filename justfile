@@ -8,7 +8,7 @@ dist := justfile_directory() + "/dist/index.js"
 wrapper := env_var('HOME') + "/Library/pnpm/flect"
 
 build:
-    pnpm --filter @getflect/cli build
+    pnpm build
 
 install: build
     printf '#!/bin/sh\nexec node "%s" "$@"\n' "{{dist}}" > "{{wrapper}}"
@@ -41,11 +41,11 @@ unpublished:
     #!/usr/bin/env bash
     set -euo pipefail
     v=$(node -p "require('./package.json').version")
-    if npm view "@getflect/cli@$v" version --prefer-online 2>/dev/null | grep -q .; then
-      echo "✗ @getflect/cli@$v is already on npm (latest: $(npm view @getflect/cli version --prefer-online)). Bump first: just patch" >&2
+    if npm view "@dotlabshq/flect-cli@$v" version --prefer-online 2>/dev/null | grep -q .; then
+      echo "✗ @dotlabshq/flect-cli@$v is already on npm (latest: $(npm view @dotlabshq/flect-cli version --prefer-online 2>/dev/null || echo none)). Bump first: just patch" >&2
       exit 1
     fi
-    echo "✓ @getflect/cli@$v is not on npm yet"
+    echo "✓ @dotlabshq/flect-cli@$v is not on npm yet"
 
 publish: unpublished check
     npm publish --access public

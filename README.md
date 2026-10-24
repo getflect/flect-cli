@@ -1,4 +1,4 @@
-# @getflect/cli
+# @dotlabshq/flect-cli
 
 The command-line interface for [Flect](https://flect.cloud) — deploy apps and
 their backing resources (database, KV, object storage) from a `flect.toml`, and
@@ -10,13 +10,13 @@ binds, and deploys everything behind it.
 Run it once, no install:
 
 ```bash
-npx @getflect/cli login
+npx @dotlabshq/flect-cli login
 ```
 
 Install globally to get the `flect` command:
 
 ```bash
-npm install -g @getflect/cli
+npm install -g @dotlabshq/flect-cli
 flect --version
 ```
 
@@ -27,6 +27,11 @@ curl -fsSL https://raw.githubusercontent.com/getflect/flect-cli/main/install.sh 
 ```
 
 Requires Node.js 20+.
+
+> Versions up to 0.2.3 were published as `@getflect/cli`. From 0.2.4 the CLI
+> ships as `@dotlabshq/flect-cli`; the command is still `flect`. If you have
+> the old package, swap it:
+> `npm uninstall -g @getflect/cli && npm install -g @dotlabshq/flect-cli`.
 
 ## Quick start
 

@@ -1,12 +1,12 @@
 #!/bin/sh
-# Flect CLI installer — installs @getflect/cli globally via npm.
+# Flect CLI installer — installs @dotlabshq/flect-cli globally via npm.
 #
 #   curl -fsSL https://raw.githubusercontent.com/getflect/flect-cli/main/install.sh | sh
 #
 # Honors $FLECT_CLI_VERSION to pin a version (default: latest).
 set -eu
 
-PKG="@getflect/cli"
+PKG="@dotlabshq/flect-cli"
 VERSION="${FLECT_CLI_VERSION:-latest}"
 
 info() { printf '\033[36m›\033[0m %s\n' "$1"; }
