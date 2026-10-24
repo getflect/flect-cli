@@ -12,7 +12,10 @@
  * by `flect login`, so a single sign-in works for both the plane and the broker.
  */
 
-import { createContextManager } from "@baseworks/cli/context"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
+import { createContextManager, type BaseConfig, type ContextManager } from "@baseworks/cli/context"
 import { resolveToken } from "@baseworks/cli/config-loader"
 import { createApiClient } from "@baseworks/cli/client"
 
@@ -32,9 +35,62 @@ interface FlectContext extends Record<string, string | undefined> {
 
 // ─── Context manager ────────────────────────────────────────────────────────
 // App name "flect" → ~/.flect/config.json (global) or ./.flect/config.json when
-// a project-local .flect/ dir exists (used to sandbox e2e tests).
+// a project-local config file exists (used to sandbox e2e tests).
+//
+// @baseworks/cli goes local as soon as a ./.flect/ *directory* exists — but
+// `flect deploy` creates that dir for state.json, so after the first deploy
+// every plane command in the project ran on an empty config (no token, default
+// base → 404). Here the global file is used unless the local file is there.
 
-export const ctx = createContextManager<FlectContext>("flect")
+type FlectConfig = BaseConfig & { context?: FlectContext }
+
+const localCtx = createContextManager<FlectContext>("flect")
+const GLOBAL_DIR = join(homedir(), ".flect")
+const GLOBAL_PATH = join(GLOBAL_DIR, "config.json")
+
+const globalCtx: ContextManager<FlectContext> = {
+  get configPath() {
+    return GLOBAL_PATH
+  },
+  loadConfig() {
+    if (!existsSync(GLOBAL_PATH)) return {}
+    try {
+      return JSON.parse(readFileSync(GLOBAL_PATH, "utf8")) as FlectConfig
+    } catch {
+      return {}
+    }
+  },
+  saveConfig(cfg: FlectConfig) {
+    mkdirSync(GLOBAL_DIR, { recursive: true })
+    writeFileSync(GLOBAL_PATH, JSON.stringify(cfg, null, 2) + "\n")
+  },
+  getContext() {
+    return this.loadConfig().context
+  },
+  setContext(parts: Partial<FlectContext>) {
+    const cfg = this.loadConfig()
+    cfg.context = { ...(cfg.context ?? {}), ...parts } as FlectContext
+    this.saveConfig(cfg)
+  },
+  clearContext() {
+    const cfg = this.loadConfig()
+    delete cfg.context
+    this.saveConfig(cfg)
+  },
+}
+
+const active = () => (existsSync(join(process.cwd(), ".flect", "config.json")) ? localCtx : globalCtx)
+
+export const ctx: ContextManager<FlectContext> = {
+  get configPath() {
+    return active().configPath
+  },
+  loadConfig: () => active().loadConfig(),
+  saveConfig: (cfg) => active().saveConfig(cfg),
+  getContext: () => active().getContext(),
+  setContext: (parts) => active().setContext(parts),
+  clearContext: () => active().clearContext(),
+}
 
 // ─── Plane bases ────────────────────────────────────────────────────────────
 // One gateway URL (Caddy/Traefik) fronts the plane and routes by path prefix:
