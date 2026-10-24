@@ -39,6 +39,7 @@ import {
   buildProjCommand,
   buildEnvCommand,
   buildAccessCommand,
+  buildInvitesCommand,
 } from "@baseworks/org/cli"
 import {
   ctx,
@@ -106,6 +107,7 @@ program.addCommand(buildWsCommand(orgDeps))
 program.addCommand(buildProjCommand(orgDeps))
 program.addCommand(buildEnvCommand(orgDeps))
 program.addCommand(buildAccessCommand(orgDeps))
+program.addCommand(buildInvitesCommand(orgDeps))
 program.addCommand(
   new Command("whoami").description("show the current user (alias: flect iam whoami)").action(async () => {
     await program.parseAsync(["", "", "iam", "whoami"])
@@ -249,7 +251,7 @@ function addResourceCommands(alias: string, kind: BindingKind, label: string): v
     .action(async (opts: ConnOpts) => {
       const { client, scopeId } = await connect(opts)
       const rows = await client.listResources(kind).catch((e) => die(e.message))
-      console.log(`scope: ${scopeId}`)
+      console.log(`scope: ${opts.scope ?? getBrokerScopePath() ?? (scopeId || "(none — run flect use)")}`)
       if (rows.length === 0) return void console.log(`  (no ${label} resources)`)
       for (const r of rows) {
         console.log(`  ${(r.externalRef ?? r.name).padEnd(24)} ${r.status.padEnd(14)} ${r.id}`)

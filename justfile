@@ -22,7 +22,20 @@ patch: build
 minor: build
     npm version minor --no-git-tag-version
 
-publish: build
+# Typecheck, unit tests, build. `publish` runs this first.
+check:
+    pnpm typecheck
+    pnpm test
+    pnpm build
+
+# The built CLI against a running realm (default: the local one behind the
+# dashboard gateway). Signs in as a fresh user with the realm's local HS256
+# secret, makes its own org, deletes it after. Never touches ~/.flect.
+e2e url="http://localhost:3300" secret_file=(justfile_directory() + "/../baseworks-ts/projects/auth-service/.env.local"):
+    pnpm build
+    FLECT_E2E_URL="{{url}}" FLECT_E2E_JWT_SECRET="$(grep '^JWT_SECRET=' '{{secret_file}}' | cut -d= -f2-)" pnpm exec vitest run src/e2e.test.ts
+
+publish: check
     npm publish --access public
 
 release-patch:

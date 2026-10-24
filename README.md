@@ -109,3 +109,16 @@ Full documentation, guides, and the `flect.toml` reference:
 ## License
 
 MIT
+
+## Development
+
+```bash
+just check   # typecheck, unit tests, build
+just e2e     # the built CLI against the local realm, through the dashboard gateway
+```
+
+`just e2e` needs the local realm up (auth, iam, org, broker and the dashboard
+on `:3300`, see the flect repo's `just up`). It signs in as a fresh user with
+the realm's local HS256 secret, makes its own org, deletes it afterwards, and
+runs in a temporary HOME, so `~/.flect` is never read or written. Pass another
+gateway with `just e2e url=https://…`.

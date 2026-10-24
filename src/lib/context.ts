@@ -31,6 +31,10 @@ interface FlectContext extends Record<string, string | undefined> {
   workspaceId?: string
   projectId?: string
   envId?: string
+  orgShort?: string
+  workspaceShort?: string
+  projectShort?: string
+  envShort?: string
 }
 
 // ─── Context manager ────────────────────────────────────────────────────────
@@ -152,20 +156,33 @@ export function clearIdentity(): void {
   ctx.saveConfig(cfg as never)
 }
 
-/** Active org id from context (set by `use`) — sent as X-Org-Id to org-scoped calls. */
+/**
+ * The active org as the CLI names it on the wire: its short id (set by `use`),
+ * sent as X-Org-Id. Short ids are what every edge speaks; the services resolve
+ * them to the full id. A context written before short ids existed still has
+ * only the full id, which the services accept as well.
+ */
 export function getContextOrgId(): string | undefined {
-  return ctx.getContext()?.orgId
+  const c = ctx.getContext()
+  return c?.orgShort ?? c?.orgId
 }
 
 /**
  * The active scope id the broker deploys/resources hang off — the deepest
  * org-service scope set by `flect use` (env → project → workspace → org). The
- * broker treats it as an opaque org-service scope id (tenancy is delegated), so
+ * broker resolves it through org-service (tenancy is delegated), so
  * `flect use acme/prod` then `flect db create` lands the resource in that env.
  */
 export function getBrokerScope(): string | undefined {
   const c = ctx.getContext()
-  return c?.envId ?? c?.projectId ?? c?.workspaceId ?? c?.orgId
+  // Level by level, the short id when `use` stored one, else the full id; the
+  // broker makes either canonical through org-service.
+  return (
+    (c?.envShort ?? c?.envId) ??
+    (c?.projectShort ?? c?.projectId) ??
+    (c?.workspaceShort ?? c?.workspaceId) ??
+    (c?.orgShort ?? c?.orgId)
+  )
 }
 
 /** Human path of the active scope, e.g. "acme/prod/api/dev" (for display). */

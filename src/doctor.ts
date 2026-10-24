@@ -113,7 +113,7 @@ export async function runDoctor(opts: { broker?: string; token?: string }): Prom
   // 5. active context (org + scope), set by `flect use`
   const orgId = getContextOrgId()
   const scopeId = getBrokerScope()
-  if (orgId) line(OK, "active org", `${getBrokerScopePath() ?? orgId} (${orgId.slice(0, 13)}…)`)
+  if (orgId) line(OK, "active org", `${getBrokerScopePath() ?? orgId} (${orgId.length > 13 ? `${orgId.slice(0, 13)}…` : orgId})`)
   else warn("active org", "no org context — tenant-scoped commands will fail", "flect use <org[/ws/proj/env]>")
   if (!scopeId) warn("active scope", "none set — deploy/db/kv target no scope", "flect use <org/ws/proj/env>")
 
