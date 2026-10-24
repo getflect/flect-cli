@@ -23,6 +23,7 @@
 
 import { writeFile, readFile, mkdir, access, appendFile } from "node:fs/promises"
 import { basename } from "node:path"
+import { createRequire } from "node:module"
 import { Command } from "commander"
 import { loadFlectToml } from "./config.js"
 import { generateLocalConfig } from "./local.js"
@@ -82,7 +83,8 @@ const program = new Command()
 program
   .name("flect")
   .description("Flect platform CLI — identity, tenancy, and deploys through the control plane")
-  .version("0.2.0")
+  // From package.json (one level up from both src/ and dist/), so it cannot drift.
+  .version((createRequire(import.meta.url)("../package.json") as { version: string }).version)
   // Required so options after a subcommand (e.g. `ws create --org acme`) bind to
   // the subcommand — the org/ws/proj/env noun commands enable positional options.
   .enablePositionalOptions()
