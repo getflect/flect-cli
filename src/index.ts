@@ -551,7 +551,15 @@ withConn(page.command("logs [page]"))
       const { log } = await client.pageBuildLog(p.id, buildId!)
       // Nomad garbage-collects finished allocations, so an old build's log is
       // simply gone — say that rather than printing nothing.
-      if (!log) return void console.log(`(no log for build ${buildId} — the allocation was garbage-collected)`)
+      if (!log) {
+        // A build that failed before its task ran (an image that never
+        // pulled) has no log at all; its reason is the useful line.
+        const build = (await client.pageBuilds(p.id)).find((b) => b.buildId === buildId)
+        if (build?.status === "failed" && build.reason) {
+          return void console.log(`(no log for build ${buildId}: it failed before it ran — ${build.reason})`)
+        }
+        return void console.log(`(no log for build ${buildId} — the allocation was garbage-collected)`)
+      }
       process.stdout.write(log.endsWith("\n") ? log : `${log}\n`)
     } catch (err) {
       die(err instanceof Error ? err.message : String(err))
