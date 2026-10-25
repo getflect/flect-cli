@@ -10,7 +10,7 @@
  */
 
 import { access } from "node:fs/promises"
-import { loadCliConfig, resolveConnection, CONFIG_PATH } from "./cli-config.js"
+import { loadCliConfig, resolveConnection, configPath } from "./cli-config.js"
 import { loadFlectToml } from "./config.js"
 import {
   getAuthBase,
@@ -73,9 +73,10 @@ export async function runDoctor(opts: { broker?: string; token?: string }): Prom
 
   // 1. config
   await loadCliConfig()
-  const hasConfig = await access(CONFIG_PATH).then(() => true, () => false)
-  if (hasConfig) line(OK, "config", CONFIG_PATH)
-  else warn("config", `no config at ${CONFIG_PATH}`, "flect login")
+  const path = configPath()
+  const hasConfig = await access(path).then(() => true, () => false)
+  if (hasConfig) line(OK, "config", path)
+  else warn("config", `no config at ${path}`, "flect login")
 
   const { brokerUrl } = await resolveConnection(opts)
   const token = opts.token ?? getIdentityToken()

@@ -5,8 +5,7 @@
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
-import { homedir } from "node:os"
-import { join } from "node:path"
+import { configDir, configPath } from "./lib/config-home.js"
 
 export interface CliConfig {
   /** Broker/API base URL, e.g. https://api-test.flect.cloud. */
@@ -25,22 +24,24 @@ export interface CliConfig {
   scope?: string
   /** Auth base for `flect login` (defaults to the broker origin). */
   auth?: string
+  /** A PEM the CLI trusts beyond the public roots: a gateway under a private CA. */
+  caFile?: string
 }
 
-export const CONFIG_DIR = join(homedir(), ".flect")
-export const CONFIG_PATH = join(CONFIG_DIR, "config.json")
+/** The config file every command reads (see lib/config-home.ts). */
+export { configPath } from "./lib/config-home.js"
 
 export async function loadCliConfig(): Promise<CliConfig> {
   try {
-    return JSON.parse(await readFile(CONFIG_PATH, "utf8")) as CliConfig
+    return JSON.parse(await readFile(configPath(), "utf8")) as CliConfig
   } catch {
     return {}
   }
 }
 
 export async function saveCliConfig(config: CliConfig): Promise<void> {
-  await mkdir(CONFIG_DIR, { recursive: true })
-  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n")
+  await mkdir(configDir(), { recursive: true })
+  await writeFile(configPath(), JSON.stringify(config, null, 2) + "\n", { mode: 0o600 })
 }
 
 /** Mask a token for display: keep the tenant/scope shape, hide the rest. */

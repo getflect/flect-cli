@@ -115,6 +115,23 @@ Full documentation, guides, and the `flect.toml` reference:
 
 MIT
 
+## Profiles
+
+Every command reads one config file: `~/.flect/config.json`, a project's own
+`.flect/config.json` when you are in that project, or a profile.
+
+```bash
+FLECT_PROFILE=local flect config set gatewayUrl https://ubuntu.orb.local
+FLECT_PROFILE=local flect config set caFile ~/path/to/private-root-ca.pem
+FLECT_PROFILE=local flect login
+FLECT_PROFILE=local flect apps
+```
+
+A profile lives in `~/.flect/profiles/<name>/` and holds its own token,
+gateway, active context and, for a gateway under a private CA, `caFile`.
+`FLECT_HOME=<dir>` points the CLI at any directory instead. `flect config get`
+shows which file is in use.
+
 ## Development
 
 ```bash

@@ -18,11 +18,14 @@
  *   flect deploy               realize flect.toml against the broker
  *   flect page deploy|ls|…     build and serve a static site from git
  *   flect resolve DB           inspect a binding's manifest (secrets redacted)
- *   flect config set broker …  persist broker URL in ~/.flect/config.json
+ *   flect config set broker …  persist settings in the active profile's config
+ *
+ * Profiles: FLECT_PROFILE=<name> keeps a whole config (token, gateway, CA) in
+ * ~/.flect/profiles/<name>; FLECT_HOME=<dir> points at any directory.
  */
 
 import { writeFile, readFile, mkdir, access, appendFile } from "node:fs/promises"
-import { basename } from "node:path"
+import { basename, resolve as resolvePath } from "node:path"
 import { createRequire } from "node:module"
 import { Command } from "commander"
 import { loadFlectToml } from "./config.js"
@@ -59,9 +62,14 @@ import {
   saveCliConfig,
   resolveConnection,
   maskToken,
-  CONFIG_PATH,
+  configPath,
   type CliConfig,
 } from "./cli-config.js"
+import { profileName, trustConfiguredCa } from "./lib/config-home.js"
+
+// A profile for a gateway under a private CA (a local node) carries its CA;
+// load it before any HTTPS call is made.
+trustConfiguredCa()
 
 const exists = (p: string) => access(p).then(() => true).catch(() => false)
 
@@ -572,18 +580,22 @@ withConn(page.command("stop [page]"))
     }
   })
 
-const config = program.command("config").description("manage CLI config (~/.flect/config.json)")
+const config = program.command("config").description("manage CLI config (the active profile's config.json; `flect config path`)")
 
 config
   .command("set <key> <value>")
-  .description("set a config value: `flect config set gatewayUrl <url>` (drives the whole plane), `broker <url>`, or `token <tok>`")
+  .description("set a config value: `gatewayUrl <url>` (drives the whole plane), `broker <url>`, `token <tok>`, or `caFile <pem>` (trust a private CA)")
   .action(async (key: string, value: string) => {
-    if (!["gatewayUrl", "broker", "token"].includes(key)) die(`unknown key "${key}" (use: gatewayUrl | broker | token)`)
+    if (!["gatewayUrl", "broker", "token", "caFile"].includes(key)) die(`unknown key "${key}" (use: gatewayUrl | broker | token | caFile)`)
+    if (key === "caFile") {
+      value = resolvePath(value)
+      await access(value).catch(() => die(`caFile ${value} does not exist`))
+    }
     const cfg = await loadCliConfig()
     cfg[key as keyof CliConfig] = value
     await saveCliConfig(cfg)
     console.log(`✓ ${key} = ${key === "token" ? maskToken(value) : value}`)
-    console.log(`  saved to ${CONFIG_PATH}`)
+    console.log(`  saved to ${configPath()}`)
   })
 
 config
@@ -594,16 +606,18 @@ config
     if (key === "gatewayUrl") return void console.log(cfg.gatewayUrl ?? "(unset)")
     if (key === "broker") return void console.log(cfg.broker ?? "(unset)")
     if (key === "token") return void console.log(maskToken(cfg.token))
+    console.log(`profile : ${profileName() ?? (process.env["FLECT_HOME"] ? "(FLECT_HOME)" : "(default)")}`)
     console.log(`gateway : ${cfg.gatewayUrl ?? "(unset)"}`)
     console.log(`broker  : ${cfg.broker ?? "(unset)"}`)
     console.log(`token   : ${maskToken(cfg.token)}`)
-    console.log(`file    : ${CONFIG_PATH}`)
+    console.log(`caFile  : ${cfg.caFile ?? "(unset)"}`)
+    console.log(`file    : ${configPath()}`)
   })
 
 config
   .command("path")
   .description("print the config file path")
-  .action(() => console.log(CONFIG_PATH))
+  .action(() => console.log(configPath()))
 
 program
   .command("doctor")

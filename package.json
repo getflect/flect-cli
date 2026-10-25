@@ -1,6 +1,6 @@
 {
   "name": "@dotlabshq/flect-cli",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Flect CLI — flect.toml → control plane, and local development",
   "type": "module",
   "bin": {
