@@ -176,12 +176,13 @@ export function getContextOrgId(): string | undefined {
 export function getBrokerScope(): string | undefined {
   const c = ctx.getContext()
   // Level by level, the short id when `use` stored one, else the full id; the
-  // broker makes either canonical through org-service.
+  // broker makes either canonical through org-service. Never the org itself:
+  // the org is X-Org-Id, not a scope, and naming it as one is refused. With
+  // only an org selected there is no scope, and org-level reads work without.
   return (
     (c?.envShort ?? c?.envId) ??
     (c?.projectShort ?? c?.projectId) ??
-    (c?.workspaceShort ?? c?.workspaceId) ??
-    (c?.orgShort ?? c?.orgId)
+    (c?.workspaceShort ?? c?.workspaceId)
   )
 }
 

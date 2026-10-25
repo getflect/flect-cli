@@ -72,6 +72,13 @@ describe.skipIf(!URL_)("flect against a running realm", () => {
     expect(orgs.map((o) => o.slug)).toEqual([slug])
   })
 
+  it("with only an org selected, the broker still answers (the org is not sent as a scope)", async () => {
+    const r = await run("use", slug)
+    expect(r.code, r.out).toBe(0)
+    const d = await run("doctor")
+    expect(d.out).toMatch(/✓ api access/)
+  })
+
   it("use walks the tree and remembers every level by short id", async () => {
     const [ws] = await json<Row[]>("ws", "ls", "--org", slug)
     const [proj] = await json<Row[]>("proj", "ls", "--org", slug, "--ws", ws!.slug)
