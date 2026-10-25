@@ -258,11 +258,17 @@ function addResourceCommands(alias: string, kind: BindingKind, label: string): v
 
   withConn(group.command("list"))
     .description(`list ${label} resources in the scope`)
-    .action(async (opts: ConnOpts) => {
+    .option("--all", "include deprovisioned ones")
+    .action(async (opts: ConnOpts & { all?: boolean }) => {
       const { client, scopeId } = await connect(opts)
-      const rows = await client.listResources(kind).catch((e) => die(e.message))
+      const all = await client.listResources(kind).catch((e) => die(e.message))
+      // Deprovisioned resources stay in the log; the list shows what exists.
+      const rows = opts.all ? all : all.filter((r) => r.status !== "deprovisioned")
       console.log(`scope: ${opts.scope ?? getBrokerScopePath() ?? (scopeId || "(none — run flect use)")}`)
-      if (rows.length === 0) return void console.log(`  (no ${label} resources)`)
+      if (rows.length === 0) {
+        const gone = all.length - rows.length
+        return void console.log(`  (no ${label} resources${gone ? `; ${gone} deprovisioned — --all to show` : ""})`)
+      }
       for (const r of rows) {
         console.log(`  ${(r.externalRef ?? r.name).padEnd(24)} ${r.status.padEnd(14)} ${r.id}`)
       }
