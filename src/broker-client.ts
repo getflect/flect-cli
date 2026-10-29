@@ -98,6 +98,25 @@ export interface ResourceRow {
   externalRef: string | null
   status: string
   failureReason: string | null
+  /** Written in flect.toml as `res_<shortId>` (RFC-0019); absent from an older broker. */
+  shortId?: string | null
+  /** The apps whose `uses` name a binding to it (RFC-0019); absent from an older broker. */
+  usedBy?: Array<{ appId: string; app: string; binding: string }>
+}
+
+/** A binding of the scope as the broker resolves it. */
+export interface BindingRow {
+  bindingId: string
+  bindingName: string
+  kind: BindingKind
+  scopeId: string
+  resourceId: string | null
+  resolvable: boolean
+}
+
+/** `res_<shortId>` when the broker gave the resource one, else its full id. */
+export function resourceRef(r: Pick<ResourceRow, "id" | "shortId">): string {
+  return r.shortId ? `res_${r.shortId}` : r.id
 }
 
 export class BrokerError extends Error {
@@ -227,8 +246,18 @@ export class BrokerClient {
     return this.call<ResourceRow>("GET", `/v1/resources/${encodeURIComponent(ref)}`)
   }
 
-  deprovisionResource(ref: string): Promise<ResourceRow> {
-    return this.call<ResourceRow>("POST", `/v1/resources/${encodeURIComponent(ref)}/deprovision`, {})
+  /** Refused (409 RESOURCE_BOUND) while bindings point at it, unless `force` removes them first. */
+  deprovisionResource(ref: string, opts: { force?: boolean } = {}): Promise<ResourceRow> {
+    return this.call<ResourceRow>("POST", `/v1/resources/${encodeURIComponent(ref)}/deprovision`, opts.force ? { force: true } : {})
+  }
+
+  listBindings(): Promise<BindingRow[]> {
+    return this.call<BindingRow[]>("GET", "/v1/bindings")
+  }
+
+  /** The names of the vars the app's last deployment kept (never values). */
+  keptVarNames(appId: string): Promise<{ names: string[] }> {
+    return this.call("GET", `/v1/apps/${encodeURIComponent(appId)}/vars`)
   }
 
   declareBinding(input: { scopeId: string; name: string; kind: BindingKind }): Promise<{ id: string; status: string }> {
@@ -261,7 +290,13 @@ export class BrokerClient {
 
   deployApp(
     appId: string,
-    input: { image?: string; vars?: Record<string, string>; services?: Array<{ binding: string; app: string }> },
+    input: {
+      image?: string
+      vars?: Record<string, string>
+      services?: Array<{ binding: string; app: string }>
+      /** The bindings the app may resolve (RFC-0019); omit to keep the last list. */
+      uses?: string[]
+    },
   ): Promise<{ status: string; jobId: string | null; hostname: string | null; failureReason: string | null }> {
     return this.call("POST", `/v1/apps/${encodeURIComponent(appId)}/deploy`, input)
   }

@@ -28,9 +28,12 @@ import { writeFile, readFile, mkdir, access, appendFile } from "node:fs/promises
 import { basename, resolve as resolvePath } from "node:path"
 import { createRequire } from "node:module"
 import { Command } from "commander"
-import { loadFlectToml } from "./config.js"
+import { loadFlectToml, parseFlectToml, type FlectProject } from "./config.js"
+import { readFlectFile, type AppFile } from "./app-file.js"
+import { planAppDeploy, applyAppDeploy } from "./deploy-app.js"
+import { resolveScopePath } from "./scope-path.js"
 import { generateLocalConfig } from "./local.js"
-import { BrokerClient, type BindingKind, type PageRow } from "./broker-client.js"
+import { BrokerClient, resourceRef, type BindingKind, type PageRow } from "./broker-client.js"
 import { createResource } from "./resource.js"
 import { deploy, deployApps, type DeployState } from "./deploy.js"
 import { flectTomlTemplate, GITIGNORE_LINES, redactConnection } from "./scaffold.js"
@@ -141,8 +144,9 @@ program
 program
   .command("dev")
   .description("generate flect.local.json from flect.toml (createEnv() runs locally, no broker)")
-  .action(async () => {
-    const project = await loadFlectToml().catch((e) => die(e.message))
+  .option("-c, --config <file>", "the flect.toml to read", "flect.toml")
+  .action(async (opts: { config: string }) => {
+    const project = await loadProject(opts.config)
     const config = generateLocalConfig(project)
     await writeFile("flect.local.json", JSON.stringify(config, null, 2) + "\n")
     console.log(`✓ wrote flect.local.json (${project.bindings.length} bindings)`)
@@ -154,8 +158,11 @@ program
 program
   .command("bindings")
   .description("list bindings declared in flect.toml")
-  .action(async () => {
-    const project = await loadFlectToml().catch((e) => die(e.message))
+  .option("-c, --config <file>", "the flect.toml to read", "flect.toml")
+  .action(async (opts: { config: string }) => {
+    const read = await readFlectFile(opts.config).catch((e) => die(e.message))
+    if (read.format === "services") return printAppFile(read.file)
+    const project = parseFlectToml(read.text)
     console.log(`${project.name} — ${project.bindings.length} bindings, ${project.apps.length} apps`)
     for (const b of project.bindings) {
       console.log(`  binding  ${b.name.padEnd(14)} ${b.kind.padEnd(9)} → ${b.resource}`)
@@ -174,9 +181,14 @@ program
   .description("realize flect.toml against the broker (provision resources + bind)")
   .option("--broker <url>", "broker URL (default: FLECT_BROKER_URL)")
   .option("--token <token>", "runtime token (default: FLECT_TOKEN)")
-  .option("--scope <scopeId>", "target org-service scope id (default: the active scope from `flect use`)")
-  .action(async (opts: { broker?: string; token?: string; scope?: string }) => {
-    const project = await loadFlectToml().catch((e) => die(e.message))
+  .option("--scope <scopeId>", "target org-service scope id (default: the active scope from `flect use`; not for a services-format file)")
+  .option("-c, --config <file>", "the flect.toml to deploy (another scope is another file: flect.dev.toml)", "flect.toml")
+  .option("--yes", "drop vars the last deploy kept that the file no longer has")
+  .action(async (opts: { broker?: string; token?: string; scope?: string; config: string; yes?: boolean }) => {
+    const read = await readFlectFile(opts.config).catch((e) => die(e.message))
+    if (read.format === "services") return deployAppFile(read.file, opts)
+    console.warn(`warning: ${opts.config} uses the old format ([[apps]]); see RFC-0019 for [services.<name>]`)
+    const project = await Promise.resolve().then(() => parseFlectToml(read.text)).catch((e) => die(e.message))
     const cfg = await brokerConfig(opts)
     // The deploy target is the active org-service scope (set by `flect use`);
     // --scope overrides with an explicit scope id. Tenancy is delegated to
@@ -223,6 +235,71 @@ program
     console.log("deploy complete — apps resolve their bindings with createEnv()")
   })
 
+/** A file of either format as the old project shape (`flect dev`): resources by id. */
+async function loadProject(path: string): Promise<FlectProject> {
+  const read = await readFlectFile(path).catch((e) => die(e.message))
+  if (read.format === "old") return Promise.resolve().then(() => parseFlectToml(read.text)).catch((e) => die(e.message))
+  const f = read.file
+  return {
+    name: f.name, scope: f.scope, apps: [], vars: {}, services: [],
+    bindings: f.resources.map((r) => ({ name: r.binding, kind: r.kind, resource: r.id, ...(r.migrationsDir ? { migrationsDir: r.migrationsDir } : {}) })),
+  }
+}
+
+function printAppFile(f: AppFile): void {
+  console.log(`${f.name} → ${f.scope} — ${f.resources.length} resources, ${f.services.length} services`)
+  for (const r of f.resources) console.log(`  resource ${r.binding.padEnd(14)} ${r.kind.padEnd(9)} ${r.id}`)
+  for (const s of f.services) {
+    const route = s.public ? "public" : s.expose ? `expose ${s.expose}` : "private"
+    console.log(`  service  ${s.key.padEnd(14)} ${route}${s.name !== `${f.name}-${s.key}` ? `  (as ${s.name})` : ""}`)
+    if (s.uses.length) console.log(`           uses    ${s.uses.join(", ")}`)
+    if (s.calls.length) console.log(`           calls   ${s.calls.join(", ")}`)
+    if (s.secrets.length) console.log(`           secrets ${s.secrets.join(", ")}`)
+  }
+}
+
+/** The scope a services-format file deploys to; `--scope` is refused (RFC-0019 §4). */
+async function fileScope(f: AppFile, opts: { scope?: string }): Promise<{ id: string; label: string }> {
+  if (opts.scope) die(`${f.path} names its scope ([app].scope = "${f.scope}"); --scope cannot send it elsewhere`)
+  const org = ctx.getContext()?.org
+  if (!org) die("no org selected — run `flect use <org>` first")
+  const scope = await resolveScopePath(orgHttp, org!, f.scope).catch((e) => die(e instanceof Error ? e.message : String(e)))
+  const active = getBrokerScope()
+  if (active && active !== scope.id) console.log(`note: the active scope is ${getBrokerScopePath() ?? active}; ${f.path} deploys to ${scope.label}`)
+  return scope
+}
+
+async function deployAppFile(f: AppFile, opts: { broker?: string; token?: string; scope?: string; yes?: boolean }): Promise<void> {
+  const cfg = await brokerConfig(opts)
+  const scope = await fileScope(f, opts)
+  console.log(`scope: ${scope.label}  (${f.path})`)
+  const client = new BrokerClient({ ...cfg, scope: scope.id, orgId: getContextOrgId() })
+
+  const plan = await planAppDeploy(client, f, scope, { yes: opts.yes }).catch((e) => die(e instanceof Error ? e.message : String(e)))
+  for (const w of plan.warnings) console.log(`  ! ${w}`)
+  if (plan.stops.length > 0) {
+    for (const m of plan.stops) console.error(`  ✗ ${m}`)
+    die(`nothing was changed: ${plan.stops.length} problem${plan.stops.length === 1 ? "" : "s"} in ${f.path}`)
+  }
+
+  const result = await applyAppDeploy(client, f, plan, scope.id)
+  let failed = false
+  if (result.binds.length > 0) console.log("resources:")
+  for (const b of result.binds) {
+    const what = b.action === "keep" ? "bound" : "bound now"
+    console.log(`  ${b.ok ? "✓" : "✗"} ${b.binding.padEnd(12)} ${b.ref}  ${b.ok ? what : `failed — ${b.detail}`}`)
+    if (!b.ok) failed = true
+  }
+  if (result.services.length > 0) console.log("services:")
+  for (const s of result.services) {
+    const where = s.hostname ? ` → https://${s.hostname}` : ""
+    console.log(`  ${s.status === "failed" ? "✗" : "✓"} ${s.service.padEnd(16)} ${s.status}${where}${s.detail ? ` — ${s.detail}` : ""}`)
+    if (s.status === "failed") failed = true
+  }
+  if (failed) process.exit(1)
+  console.log("deploy complete")
+}
+
 /** Add the shared connection flags to a command. */
 function withConn(cmd: Command): Command {
   return cmd
@@ -232,6 +309,24 @@ function withConn(cmd: Command): Command {
 }
 
 type ConnOpts = { broker?: string; token?: string; scope?: string }
+
+/**
+ * For the resource commands: the scope of a services-format file (`-c`, or a
+ * flect.toml here in that format), else the active scope.
+ */
+async function connectForFile(opts: ConnOpts & { config?: string }): Promise<{ client: BrokerClient; scopeId: string; label: string; file?: AppFile }> {
+  const path = opts.config ?? (await exists("flect.toml") ? "flect.toml" : undefined)
+  const read = path ? await readFlectFile(path).catch((e) => die(e.message)) : undefined
+  if (read?.format !== "services") {
+    if (opts.config) die(`${opts.config} is not a services-format file; it names no scope`)
+    const c = await connect(opts)
+    return { ...c, label: opts.scope ?? getBrokerScopePath() ?? (c.scopeId || "(none — run flect use)") }
+  }
+  const cfg = await brokerConfig(opts)
+  const scope = await fileScope(read.file, opts)
+  return { client: new BrokerClient({ ...cfg, scope: scope.id, orgId: getContextOrgId() }), scopeId: scope.id, label: scope.label, file: read.file }
+}
+
 async function connect(opts: ConnOpts): Promise<{ client: BrokerClient; scopeId: string }> {
   const cfg = await brokerConfig(opts)
   // Active scope: --scope flag > the org-service scope set by `flect use`.
@@ -244,13 +339,15 @@ function addResourceCommands(alias: string, kind: BindingKind, label: string): v
   const group = program.command(alias).description(`manage ${label} resources`)
 
   withConn(group.command("create <name>"))
-    .description(`create a ${label} resource`)
-    .action(async (name: string, opts: ConnOpts) => {
-      const { client, scopeId } = await connect(opts)
+    .description(`create a ${label} resource (in the scope of flect.toml / -c, else the active one)`)
+    .option("-c, --config <file>", "create it in the scope this file names")
+    .action(async (name: string, opts: ConnOpts & { config?: string }) => {
+      const { client, scopeId, label: where, file } = await connectForFile(opts)
       try {
         const r = await createResource(client, scopeId, kind, name)
-        console.log(`✓ created ${label} "${r.externalRef}" (${r.status})`)
-        console.log(`  flect.toml → name = "${r.externalRef}"`)
+        console.log(`✓ created ${label} "${r.name}" in ${where} (${r.status})`)
+        if (file || r.shortId) console.log(`  ${file?.path ?? "flect.toml"} → id = "${resourceRef(r)}"`)
+        else console.log(`  flect.toml → name = "${r.externalRef}"`)
       } catch (err) {
         die(err instanceof Error ? err.message : String(err))
       }
@@ -259,25 +356,28 @@ function addResourceCommands(alias: string, kind: BindingKind, label: string): v
   withConn(group.command("list"))
     .description(`list ${label} resources in the scope`)
     .option("--all", "include deprovisioned ones")
-    .action(async (opts: ConnOpts & { all?: boolean }) => {
-      const { client, scopeId } = await connect(opts)
+    .option("-c, --config <file>", "list the scope this file names")
+    .action(async (opts: ConnOpts & { all?: boolean; config?: string }) => {
+      const { client, label: where } = await connectForFile(opts)
       const all = await client.listResources(kind).catch((e) => die(e.message))
       // Deprovisioned resources stay in the log; the list shows what exists.
       const rows = opts.all ? all : all.filter((r) => r.status !== "deprovisioned")
-      console.log(`scope: ${opts.scope ?? getBrokerScopePath() ?? (scopeId || "(none — run flect use)")}`)
+      console.log(`scope: ${where}`)
       if (rows.length === 0) {
         const gone = all.length - rows.length
         return void console.log(`  (no ${label} resources${gone ? `; ${gone} deprovisioned — --all to show` : ""})`)
       }
       for (const r of rows) {
-        console.log(`  ${(r.externalRef ?? r.name).padEnd(24)} ${r.status.padEnd(14)} ${r.id}`)
+        const users = r.usedBy?.length ? r.usedBy.map((u) => (u.binding === r.usedBy![0]!.binding ? u.app : `${u.app} (${u.binding})`)).join(", ") : "—"
+        console.log(`  ${resourceRef(r).padEnd(12)} ${r.name.padEnd(24)} ${r.status.padEnd(14)} used by: ${users}`)
       }
     })
 
   withConn(group.command("status <ref>"))
     .description(`show a ${label} resource's status`)
-    .action(async (ref: string, opts: ConnOpts) => {
-      const { client } = await connect(opts)
+    .option("-c, --config <file>", "in the scope this file names")
+    .action(async (ref: string, opts: ConnOpts & { config?: string }) => {
+      const { client } = await connectForFile(opts)
       try {
         const r = await client.getResource(ref)
         console.log(JSON.stringify(r, null, 2))
@@ -287,11 +387,13 @@ function addResourceCommands(alias: string, kind: BindingKind, label: string): v
     })
 
   withConn(group.command("delete <ref>"))
-    .description(`deprovision a ${label} resource`)
-    .action(async (ref: string, opts: ConnOpts) => {
-      const { client } = await connect(opts)
+    .description(`deprovision a ${label} resource (refused while bound; --force unbinds first)`)
+    .option("-c, --config <file>", "in the scope this file names")
+    .option("--force", "remove the bindings that point at it first")
+    .action(async (ref: string, opts: ConnOpts & { config?: string; force?: boolean }) => {
+      const { client } = await connectForFile(opts)
       try {
-        const r = await client.deprovisionResource(ref)
+        const r = await client.deprovisionResource(ref, { force: opts.force })
         console.log(`✓ ${label} "${ref}" → ${r.status}`)
       } catch (err) {
         die(err instanceof Error ? err.message : String(err))

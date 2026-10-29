@@ -37,33 +37,55 @@ Requires Node.js 20+.
 
 ```bash
 flect login                        # SSO → ~/.flect/config.json
-flect init                         # scaffold flect.toml (includes a scope path)
-flect deploy                       # create the scope, provision resources, bind, deploy
+flect use <org>                    # the org your files deploy in
+flect db create clave-db           # prints the id to write: id = "res_k7f3a2"
+flect deploy                       # flect.toml → its scope
+flect deploy -c flect.dev.toml     # another scope is another file
 ```
 
-`flect deploy` resolves the `scope = "workspace/project/environment"` in your
-`flect.toml` and **creates any missing scope**, provisions every resource the
-manifest names, binds them, and rolls out your app behind TLS. Your container
-receives only `FLECT_TOKEN` + `FLECT_BROKER_URL` — no connection strings.
+A `flect.toml` is **one application in one scope**. Its services are that
+application's microservices; databases, KV stores and object stores are
+resources created apart and used by id (RFC-0019):
 
 ```toml
-name  = "myapp"
-port  = 3000
-scope = "myapp/main/prod"          # deploy creates missing scopes
-
-[[apps]]
-name   = "myapp"
-image  = "ghcr.io/you/myapp:0.1.0"
-port   = 3000
-public = true
+[app]
+name  = "clave"
+scope = "platform/clave/production"   # workspace/project/environment; the file decides
 
 [[databases]]
-binding = "DB"                     # code calls env.db("DB")
-name    = "myapp-db"
+binding = "DB"                         # code calls env.db("DB")
+id      = "res_k7f3a2"                 # flect db create; a resource of this scope
+
+[vars]                                 # every service
+NODE_ENV = "production"
+
+[services.foldbase]
+image = "ghcr.io/dotlabshq/foldbase:0.5.0"
+uses  = ["DB"]                         # the only bindings it may resolve
+
+[services.web]
+image  = "ghcr.io/dotlabshq/clave-web:0.2.4"
+public = true
+calls  = ["foldbase"]                  # FOLDBASE_SERVICE_URL; nothing else
 ```
 
+- A service gets only what it lists: `uses` (the broker refuses any other
+  binding), `calls`, `[vars]` plus its own `[services.X.vars]`.
+- `flect deploy` checks the whole file against the scope first and changes
+  nothing if anything is off: an id that is not a resource of this scope, a
+  binding name another application already uses, kept vars the file would
+  drop (`--yes` drops them).
+- `--scope` is refused for this format: a production file cannot be sent to
+  dev by a flag.
+- `flect db list` shows each resource's id and which services use it;
+  `flect db delete` is refused while it is bound (`--force` unbinds first).
+
+The old format (`[[apps]]`, resources by `name`) keeps working as before: it
+deploys to the active scope (`flect use`), creates resources by name, and
+gives every app every var and service.
+
 ```typescript
-import { createEnv } from "@getflect/sdk"
+import { createEnv } from "@dotlabshq/flect-sdk"
 const db = await createEnv().db("DB")   // an official @libsql/client — no URL, no secret
 ```
 
@@ -83,11 +105,11 @@ same app code, no broker needed.
 | `flect login` / `logout` | SSO sign-in; token stored in `~/.flect/config.json` |
 | `flect init` | scaffold a `flect.toml` |
 | `flect dev` | generate `flect.local.json` for local `createEnv()` |
-| `flect deploy` | create scope, provision, bind, deploy |
+| `flect deploy [-c file] [--yes]` | check the file against its scope, bind, deploy each service |
 | `flect bindings` | list bindings/apps/services declared in `flect.toml` |
 | `flect apps` | list deployed apps in the active scope |
 | `flect scope create\|list` · `flect use` | manage / switch the active scope |
-| `flect db\|kv\|store create\|list\|status\|delete` | manage resources directly |
+| `flect db\|kv\|store create\|list\|status\|delete [-c file]` | manage resources in the file's scope (else the active one) |
 | `flect resolve <binding>` | inspect a binding manifest (secrets redacted) |
 | `flect whoami` · `flect ps` | show identity and where you're pointed |
 | `flect doctor` | diagnose config / broker / auth / scope / providers |

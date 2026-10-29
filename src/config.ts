@@ -167,7 +167,7 @@ function durationSec(v: unknown, app: string, key: string): number | undefined {
 }
 
 /** `false` | "/path" | { path, interval, timeout } → a normalized declaration. */
-function healthOf(v: unknown, app: string): HealthDecl | false {
+export function healthOf(v: unknown, app: string): HealthDecl | false {
   if (v === false) return false
   if (v === true) return {}
   const raw: Record<string, unknown> =
@@ -208,6 +208,9 @@ function varsOf(value: unknown): Record<string, string> {
  * form (top-level `name` + bindings) and the app-group form (`[app]` + `[[apps]]`). */
 export function parseFlectToml(text: string): FlectProject {
   const doc = parse(text) as Record<string, unknown>
+  if (isAppFileDoc(doc)) {
+    throw new FlectTomlError("this file uses the services format (RFC-0019); this command does not read it yet")
+  }
   const appSection = (doc["app"] as Record<string, unknown> | undefined) ?? {}
 
   // A pages-only repo has nothing but `[page]`, so its name stands in for the
@@ -280,6 +283,15 @@ export function parseFlectToml(text: string): FlectProject {
     services: serviceEntries(doc["services"]),
     ...(page ? { page } : {}),
   }
+}
+
+/**
+ * The services format (RFC-0019): `[services.<name>]` tables, not
+ * `[[services]]` entries. The format a file uses decides the rules it gets.
+ */
+export function isAppFileDoc(doc: Record<string, unknown>): boolean {
+  const services = doc["services"]
+  return typeof services === "object" && services !== null && !Array.isArray(services)
 }
 
 export async function loadFlectToml(path = "flect.toml"): Promise<FlectProject> {
