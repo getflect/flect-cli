@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { parseAppFile } from "./app-file.js"
 import { parseFlectToml } from "./config.js"
+import { flectTomlTemplate } from "./scaffold.js"
 import { applyAppDeploy, planAppDeploy } from "./deploy-app.js"
 import { BrokerError, type AppRow, type BindingRow, type ResourceRow } from "./broker-client.js"
 
@@ -188,5 +189,13 @@ describe("flect deploy (services format)", () => {
     const apps: AppRow[] = [{ id: "app-api", name: "clave-api", status: "deployed", image: null, public: false, expose: null, domain: null, hostname: null, jobId: null }]
     const plan = await planAppDeploy(fakeBroker({ apps, kept: { "app-api": ["JWT_SECRET"] }, secrets: { "clave-api": ["JWT_SECRET"] } }), f, scope)
     expect(plan.stops).toEqual([])
+  })
+})
+
+describe("flect init", () => {
+  it("writes a services-format file for the active scope that parses", () => {
+    const f = parseAppFile(flectTomlTemplate("shop", "web/shop/production"))
+    expect(f.scope).toBe("web/shop/production")
+    expect(f.services.map((s) => [s.name, s.uses])).toEqual([["shop-web", ["DB"]]])
   })
 })

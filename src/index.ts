@@ -134,11 +134,15 @@ program
   .action(async (opts: { name?: string }) => {
     if (await exists("flect.toml")) die("flect.toml already exists")
     const name = opts.name ?? basename(process.cwd())
-    await writeFile("flect.toml", flectTomlTemplate(name))
+    // The active context below the org is the file's scope.
+    const c = ctx.getContext()
+    const scope = c?.workspace && c.project && c.env ? `${c.workspace}/${c.project}/${c.env}` : undefined
+    await writeFile("flect.toml", flectTomlTemplate(name, scope))
     if (await exists(".gitignore")) await appendFile(".gitignore", GITIGNORE_LINES.join("\n"))
     else await writeFile(".gitignore", GITIGNORE_LINES.join("\n"))
-    console.log(`✓ created flect.toml for "${name}"`)
-    console.log("  next: `flect dev` for local development, or `flect deploy` to provision")
+    console.log(`✓ created flect.toml for "${name}"${scope ? ` in ${scope}` : ""}`)
+    if (!scope) console.log("  set [app].scope to the workspace/project/environment it deploys to")
+    console.log(`  next: \`flect db create ${name}-db\` and paste its id, then \`flect deploy\``)
   })
 
 program
