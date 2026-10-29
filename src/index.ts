@@ -401,6 +401,101 @@ function addResourceCommands(alias: string, kind: BindingKind, label: string): v
     })
 }
 
+// ─── flect secret ───────────────────────────────────────────────────────────
+//
+// Secrets (RFC-0019 §6): the file lists names, the values go to the broker's
+// secret store per service and scope. A value is read from stdin, never from
+// an argument, so it stays out of shell history and process lists. Nothing
+// here prints a value.
+
+/** The broker app a `<service>` argument means: the file's service key, else the app name itself. */
+function secretTarget(file: AppFile | undefined, service: string): string {
+  if (!file) return service
+  const s = file.services.find((x) => x.key === service || x.name === service)
+  if (!s) die(`no [services.${service}] in ${file.path} (services: ${file.services.map((x) => x.key).join(", ")})`)
+  return s!.name
+}
+
+async function readSecretValue(name: string): Promise<string> {
+  if (process.stdin.isTTY) {
+    // Typed: hide it, one line.
+    process.stdout.write(`${name}: `)
+    process.stdin.setRawMode(true)
+    process.stdin.resume()
+    process.stdin.setEncoding("utf8")
+    const value = await new Promise<string>((resolve, reject) => {
+      let buf = ""
+      process.stdin.on("data", (ch: string) => {
+        for (const c of ch) {
+          if (c === "\r" || c === "\n") return resolve(buf)
+          if (c === "\u0003") return reject(new Error("cancelled"))
+          if (c === "\u007f") buf = buf.slice(0, -1)
+          else buf += c
+        }
+      })
+    }).finally(() => {
+      process.stdin.setRawMode(false)
+      process.stdin.pause()
+      process.stdout.write("\n")
+    })
+    return value
+  }
+  // Piped: all of it, without the one newline `echo` adds.
+  const chunks: Buffer[] = []
+  for await (const c of process.stdin) chunks.push(c as Buffer)
+  return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "")
+}
+
+const secret = program.command("secret").description("manage a service's secrets (values from stdin; names only are ever shown)")
+
+withConn(secret.command("set <service> <NAME>"))
+  .description("set a secret for a service in the file's scope (the value is read from stdin)")
+  .option("-c, --config <file>", "in the scope this file names")
+  .action(async (service: string, name: string, opts: ConnOpts & { config?: string }) => {
+    const { client, label, file } = await connectForFile(opts)
+    const app = secretTarget(file, service)
+    const value = await readSecretValue(name).catch((e) => die(e.message))
+    if (!value) die("empty value: nothing was set")
+    try {
+      await client.setSecret(app, name, value!)
+      console.log(`✓ ${name} set for ${service} in ${label}; it reaches the service on its next deploy`)
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+withConn(secret.command("list [service]"))
+  .description("the names of the secrets set in the file's scope (every service of the file when none is given)")
+  .option("-c, --config <file>", "in the scope this file names")
+  .action(async (service: string | undefined, opts: ConnOpts & { config?: string }) => {
+    const { client, label, file } = await connectForFile(opts)
+    if (!service && !file) die("name a service, or run this next to a services-format flect.toml")
+    const targets = service ? [{ key: service, name: secretTarget(file, service), wants: file?.services.find((x) => x.key === service)?.secrets ?? [] }]
+      : file!.services.map((s) => ({ key: s.key, name: s.name, wants: s.secrets }))
+    console.log(`scope: ${label}`)
+    for (const t of targets) {
+      const { names } = await client.listSecrets(t.name).catch((e) => die(e.message))
+      const missing = t.wants.filter((n) => !names.includes(n))
+      const unused = names.filter((n) => file && !t.wants.includes(n))
+      console.log(`  ${t.key.padEnd(16)} ${names.length ? names.join(", ") : "—"}`)
+      if (missing.length) console.log(`  ${"".padEnd(16)} not set: ${missing.join(", ")}`)
+      if (unused.length) console.log(`  ${"".padEnd(16)} set but not listed in ${file!.path}: ${unused.join(", ")}`)
+    }
+  })
+
+withConn(secret.command("unset <service> <NAME>"))
+  .description("remove a secret; the next deploy of a service that lists it stops")
+  .option("-c, --config <file>", "in the scope this file names")
+  .action(async (service: string, name: string, opts: ConnOpts & { config?: string }) => {
+    const { client, label, file } = await connectForFile(opts)
+    try {
+      await client.unsetSecret(secretTarget(file, service), name)
+      console.log(`✓ ${name} removed from ${service} in ${label}`)
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
+    }
+  })
+
 addResourceCommands("db", "database", "database")
 addResourceCommands("kv", "kv", "kv")
 addResourceCommands("store", "storage", "storage")

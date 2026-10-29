@@ -14,7 +14,8 @@ import { BrokerError, resourceRef, type AppRow, type BindingKind, type BindingRo
 
 type Client = Pick<
   BrokerClient,
-  "getResource" | "listResources" | "listBindings" | "listApps" | "keptVarNames" | "declareBinding" | "bind" | "declareApp" | "deployApp"
+  | "getResource" | "listResources" | "listBindings" | "listApps" | "keptVarNames" | "listSecrets"
+  | "declareBinding" | "bind" | "declareApp" | "deployApp"
 >
 
 export interface BindStep {
@@ -44,9 +45,21 @@ export async function planAppDeploy(
   const warnings: string[] = []
   const binds: BindStep[] = []
 
-  const withSecrets = file.services.filter((s) => s.secrets.length > 0)
-  if (withSecrets.length > 0) {
-    stops.push(`secrets are not supported by this CLI yet (RFC-0019 P3): ${withSecrets.map((s) => s.key).join(", ")} list some`)
+  // Secrets: every listed name must have a value in this scope.
+  for (const s of file.services.filter((x) => x.secrets.length > 0)) {
+    let set: string[]
+    try {
+      set = (await client.listSecrets(s.name)).names
+    } catch (err) {
+      if (err instanceof BrokerError && err.status === 404) {
+        stops.push("the broker is older than this CLI (no /v1/secrets); it must be upgraded first")
+        break
+      }
+      throw err
+    }
+    for (const n of s.secrets.filter((x) => !set.includes(x))) {
+      stops.push(`${s.key} needs secret ${n} in ${scope.label}: flect secret set ${s.key} ${n}${file.path !== "flect.toml" ? ` -c ${file.path}` : ""}`)
+    }
   }
 
   // Resources: each id must be a live resource of the right kind in this scope.
@@ -184,6 +197,7 @@ export async function applyAppDeploy(
         // `binding` is what the env name is made from: api → API_SERVICE_URL.
         services: s.calls.map((c) => ({ binding: c, app: nameOf.get(c)! })),
         uses: s.uses,
+        secrets: s.secrets,
       })
       services.push({
         service: s.key,

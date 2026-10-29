@@ -77,6 +77,11 @@ calls  = ["foldbase"]                  # FOLDBASE_SERVICE_URL; nothing else
   drop (`--yes` drops them).
 - `--scope` is refused for this format: a production file cannot be sent to
   dev by a flag.
+- Secrets: the file lists names (`secrets = ["JWT_SECRET"]` on a service);
+  `flect secret set <service> <NAME>` reads the value from stdin and keeps it
+  for that service in the file's scope. Only the services that list a secret
+  get it, and a deploy stops while a listed one is not set. Nothing prints a
+  value.
 - `flect db list` shows each resource's id and which services use it;
   `flect db delete` is refused while it is bound (`--force` unbinds first).
 
@@ -110,6 +115,7 @@ same app code, no broker needed.
 | `flect apps` | list deployed apps in the active scope |
 | `flect scope create\|list` · `flect use` | manage / switch the active scope |
 | `flect db\|kv\|store create\|list\|status\|delete [-c file]` | manage resources in the file's scope (else the active one) |
+| `flect secret set\|list\|unset <service> [NAME] [-c file]` | a service's secrets in the file's scope (values from stdin) |
 | `flect resolve <binding>` | inspect a binding manifest (secrets redacted) |
 | `flect whoami` · `flect ps` | show identity and where you're pointed |
 | `flect doctor` | diagnose config / broker / auth / scope / providers |

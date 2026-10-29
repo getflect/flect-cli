@@ -255,6 +255,20 @@ export class BrokerClient {
     return this.call<BindingRow[]>("GET", "/v1/bindings")
   }
 
+  /** Set one secret of an app in the active scope. The answer has names only. */
+  setSecret(app: string, name: string, value: string): Promise<{ names: string[] }> {
+    return this.call("POST", `/v1/secrets/${encodeURIComponent(app)}/${encodeURIComponent(name)}`, { value })
+  }
+
+  unsetSecret(app: string, name: string): Promise<{ names: string[] }> {
+    return this.call("POST", `/v1/secrets/${encodeURIComponent(app)}/${encodeURIComponent(name)}/unset`, {})
+  }
+
+  /** The names of an app's secrets in the active scope (never values). */
+  listSecrets(app: string): Promise<{ names: string[] }> {
+    return this.call("GET", `/v1/secrets/${encodeURIComponent(app)}`)
+  }
+
   /** The names of the vars the app's last deployment kept (never values). */
   keptVarNames(appId: string): Promise<{ names: string[] }> {
     return this.call("GET", `/v1/apps/${encodeURIComponent(appId)}/vars`)
@@ -296,6 +310,8 @@ export class BrokerClient {
       services?: Array<{ binding: string; app: string }>
       /** The bindings the app may resolve (RFC-0019); omit to keep the last list. */
       uses?: string[]
+      /** The names of the secrets to render (RFC-0019 §6); omit to keep the last ones. */
+      secrets?: string[]
     },
   ): Promise<{ status: string; jobId: string | null; hostname: string | null; failureReason: string | null }> {
     return this.call("POST", `/v1/apps/${encodeURIComponent(appId)}/deploy`, input)

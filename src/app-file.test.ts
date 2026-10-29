@@ -78,7 +78,7 @@ describe("parseAppFile", () => {
 })
 
 /** A broker with one database in the scope and whatever the test adds. */
-function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record<string, string[]>; resources?: ResourceRow[] } = {}) {
+function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record<string, string[]>; resources?: ResourceRow[]; secrets?: Record<string, string[]> } = {}) {
   const db: ResourceRow = {
     id: "resource-1", kind: "database", scopeId: "s1", providerId: "p", name: "clave-db",
     externalRef: "ns", status: "provisioned", failureReason: null, shortId: "k7f3a2",
@@ -97,6 +97,7 @@ function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record
     async listBindings() { return o.bindings ?? [] },
     async listApps() { return o.apps ?? [] },
     async keptVarNames(id: string) { return { names: o.kept?.[id] ?? [] } },
+    async listSecrets(app: string) { return { names: o.secrets?.[app] ?? [] } },
     async declareBinding(i: unknown) { calls.push(["declareBinding", i]); return { id: "binding-new", status: "declared" } },
     async bind(id: string, resourceId: string) { calls.push(["bind", { id, resourceId }]); return { status: "bound" } },
     async declareApp(i: { name: string }) { calls.push(["declareApp", i.name]); return { id: `app-${++n}`, name: i.name, status: "declared" } },
@@ -169,8 +170,23 @@ describe("flect deploy (services format)", () => {
     ])
   })
 
-  it("secrets stop the deploy until P3", async () => {
+  it("a listed secret must be set in the scope; the deploy then names it, never a value", async () => {
     const f = parseAppFile(CLAVE.replace(`calls = ["foldbase"]`, `calls = ["foldbase"]\nsecrets = ["JWT_SECRET"]`))
-    expect((await planAppDeploy(fakeBroker(), f, scope)).stops.join()).toMatch(/secrets are not supported/)
+    expect((await planAppDeploy(fakeBroker(), f, scope)).stops).toEqual([
+      "api needs secret JWT_SECRET in dotlabs/platform/clave/production: flect secret set api JWT_SECRET",
+    ])
+    const client = fakeBroker({ secrets: { "clave-api": ["JWT_SECRET"] } })
+    const plan = await planAppDeploy(client, f, scope)
+    expect(plan.stops).toEqual([])
+    await applyAppDeploy(client, f, plan, "s1")
+    const api = client.calls.find(([k, v]) => k === "deployApp" && (v as { id: string }).id === "app-2")![1] as { secrets: string[] }
+    expect(api.secrets).toEqual(["JWT_SECRET"])
+  })
+
+  it("a kept var that moved to secrets is not reported as dropped", async () => {
+    const f = parseAppFile(CLAVE.replace(`calls = ["foldbase"]`, `calls = ["foldbase"]\nsecrets = ["JWT_SECRET"]`))
+    const apps: AppRow[] = [{ id: "app-api", name: "clave-api", status: "deployed", image: null, public: false, expose: null, domain: null, hostname: null, jobId: null }]
+    const plan = await planAppDeploy(fakeBroker({ apps, kept: { "app-api": ["JWT_SECRET"] }, secrets: { "clave-api": ["JWT_SECRET"] } }), f, scope)
+    expect(plan.stops).toEqual([])
   })
 })
