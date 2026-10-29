@@ -231,5 +231,12 @@ export async function readFlectFile(path: string): Promise<{ format: "services";
     throw new FlectTomlError(`not found at "${path}" — run \`flect init\` first`)
   }
   const doc = parse(text) as Record<string, unknown>
-  return isAppFileDoc(doc) ? { format: "services", file: parseAppFile(text, path) } : { format: "old", text }
+  if (!isAppFileDoc(doc)) return { format: "old", text }
+  try {
+    return { format: "services", file: parseAppFile(text, path) }
+  } catch (err) {
+    // Say which file: there may be one per scope.
+    if (err instanceof FlectTomlError && path !== "flect.toml") err.message = err.message.replace(/^flect\.toml:/, `${path}:`)
+    throw err
+  }
 }
