@@ -16,6 +16,7 @@
  *   flect bindings             list bindings declared in flect.toml
  *   flect db|kv|store create   create a resource (also: list, status, delete)
  *   flect deploy               realize flect.toml against the broker
+ *   flect app delete <service> delete an app (--purge-data: its volumes too, for good)
  *   flect page deploy|ls|…     build and serve a static site from git
  *   flect resolve DB           inspect a binding's manifest (secrets redacted)
  *   flect config set broker …  persist settings in the active profile's config
@@ -27,6 +28,7 @@
 import { writeFile, readFile, mkdir, access, appendFile } from "node:fs/promises"
 import { basename, resolve as resolvePath } from "node:path"
 import { createRequire } from "node:module"
+import { createInterface } from "node:readline/promises"
 import { Command } from "commander"
 import { loadFlectToml, parseFlectToml, type FlectProject } from "./config.js"
 import { readFlectFile, type AppFile } from "./app-file.js"
@@ -521,6 +523,38 @@ withConn(program.command("apps"))
           : "private"
       console.log(`  ${a.name.padEnd(16)} ${a.status.padEnd(10)} ${route}`)
       if (a.image) console.log(`  ${"".padEnd(16)} ${"".padEnd(10)} ${a.image}`)
+    }
+  })
+
+const appCmd = program.command("app").description("manage one deployed app")
+
+withConn(appCmd.command("delete <service>"))
+  .description(
+    "delete an app: its job, kept vars, secrets and tokens. Its volumes are kept 7 days, then removed; " +
+      "--purge-data removes them now, and that data is gone for good",
+  )
+  .option("-c, --config <file>", "in the scope this file names (<service> may be its [services.<key>])")
+  .option("--purge-data", "also delete the app's volumes and their data at once; this cannot be undone")
+  .option("--yes", "do not ask before --purge-data")
+  .action(async (service: string, opts: ConnOpts & { config?: string; purgeData?: boolean; yes?: boolean }) => {
+    const { client, label, file } = await connectForFile(opts)
+    const name = secretTarget(file, service)
+    const apps = await client.listApps().catch((e) => die(e.message))
+    const hit = apps.find((a) => (a.name === name || a.id === name) && a.status !== "deleted")
+    if (!hit) die(`no app "${name}" in ${label} — \`flect apps\` to see them`)
+    if (opts.purgeData && !opts.yes) {
+      if (!process.stdin.isTTY) die("--purge-data deletes the app's data for good; pass --yes to do it without a prompt")
+      const rl = createInterface({ input: process.stdin, output: process.stdout })
+      const typed = await rl.question(`This deletes ${hit!.name} and its volumes; the data cannot be recovered. Type the app name to go on: `)
+      rl.close()
+      if (typed.trim() !== hit!.name) die("not deleted")
+    }
+    try {
+      const r = await client.deleteApp(hit!.id, { purgeData: opts.purgeData })
+      console.log(`✓ app "${hit!.name}" → ${r.status}`)
+      console.log(opts.purgeData ? "  its volumes are removed at the next sweep" : "  its volumes (if any) are kept 7 days, then removed")
+    } catch (err) {
+      die(err instanceof Error ? err.message : String(err))
     }
   })
 

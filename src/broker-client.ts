@@ -321,6 +321,14 @@ export class BrokerClient {
     return this.call("POST", `/v1/apps/${encodeURIComponent(appId)}/deploy`, input)
   }
 
+  /**
+   * Delete an app: its job, kept vars, secrets and tokens. Its volumes are kept
+   * 7 days (RFC-0022 D2); `purgeData` removes them at the next sweep, for good.
+   */
+  deleteApp(appId: string, opts: { purgeData?: boolean } = {}): Promise<AppRow> {
+    return this.call<AppRow>("POST", `/v1/apps/${encodeURIComponent(appId)}/delete`, opts.purgeData ? { purgeData: true } : {})
+  }
+
   listPages(): Promise<PageRow[]> {
     return this.call<PageRow[]>("GET", "/v1/pages")
   }

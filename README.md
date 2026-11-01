@@ -82,6 +82,14 @@ calls  = ["foldbase"]                  # FOLDBASE_SERVICE_URL; nothing else
   for that service in the file's scope. Only the services that list a secret
   get it, and a deploy stops while a listed one is not set. Nothing prints a
   value.
+- Volumes (RFC-0022): `volumes = ["/data"]` or
+  `[{ path = "/data", size = "10GiB", owner = "1000:1000" }]` on a service
+  keeps that directory across deploys (default size 1 GiB, at most 10). A
+  service with a volume runs one instance (`replicas` 0 or 1). Every deploy
+  sends the list, so a path taken out of the file is unmounted (the broker
+  keeps its data detached, and the deploy warns).
+- `flect app delete <service>` deletes an app; its volumes are kept 7 days.
+  `--purge-data` removes them at once, and that data is gone for good.
 - `flect db list` shows each resource's id and which services use it;
   `flect db delete` is refused while it is bound (`--force` unbinds first).
 
@@ -113,6 +121,7 @@ same app code, no broker needed.
 | `flect deploy [-c file] [--yes]` | check the file against its scope, bind, deploy each service |
 | `flect bindings` | list bindings/apps/services declared in `flect.toml` |
 | `flect apps` | list deployed apps in the active scope |
+| `flect app delete <service> [-c file] [--purge-data]` | delete an app; `--purge-data` also deletes its volumes for good |
 | `flect scope create\|list` · `flect use` | manage / switch the active scope |
 | `flect db\|kv\|store create\|list\|status\|delete [-c file]` | manage resources in the file's scope (else the active one) |
 | `flect secret set\|list\|unset <service> [NAME] [-c file]` | a service's secrets in the file's scope (values from stdin) |
