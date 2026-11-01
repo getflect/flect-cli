@@ -86,9 +86,11 @@ function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record
   }
   const resources = o.resources ?? [db]
   const calls: Array<[string, unknown]> = []
+  const declared: unknown[] = []
   let n = 0
   const client = {
     calls,
+    declared,
     async getResource(ref: string) {
       const r = resources.find((x) => `res_${x.shortId}` === ref || x.id === ref)
       if (!r) throw new BrokerError(404, "NOT_FOUND", "not found")
@@ -101,7 +103,7 @@ function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record
     async listSecrets(app: string) { return { names: o.secrets?.[app] ?? [] } },
     async declareBinding(i: unknown) { calls.push(["declareBinding", i]); return { id: "binding-new", status: "declared" } },
     async bind(id: string, resourceId: string) { calls.push(["bind", { id, resourceId }]); return { status: "bound" } },
-    async declareApp(i: { name: string }) { calls.push(["declareApp", i.name]); return { id: `app-${++n}`, name: i.name, status: "declared" } },
+    async declareApp(i: { name: string }) { calls.push(["declareApp", i.name]); declared.push(i); return { id: `app-${++n}`, name: i.name, status: "declared" } },
     async deployApp(id: string, i: unknown) {
       calls.push(["deployApp", { id, ...(i as object) }])
       return { status: "deployed", jobId: "j", hostname: null, failureReason: null }
@@ -110,6 +112,52 @@ function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record
   return client
 }
 const scope = { id: "s1", label: "dotlabs/platform/clave/production" }
+
+describe("volumes (RFC-0022)", () => {
+  const withVolumes = (v: string, extra = "") =>
+    CLAVE.replace(`port  = 3001\n`, `port  = 3001\nvolumes = ${v}\n${extra}`)
+
+  it("takes a path or { path, size, owner }, kept as written", () => {
+    const f = parseAppFile(withVolumes(`["/data", { path = "/cache", size = "10GiB", owner = "1000:1000" }]`))
+    expect(f.services[0]!.volumes).toEqual(["/data", { path: "/cache", size: "10GiB", owner: "1000:1000" }])
+    expect(f.services[1]!.volumes).toEqual([])
+  })
+
+  it("refuses what the broker would refuse, naming the service and the entry", () => {
+    expect(() => parseAppFile(withVolumes(`["/"]`))).toThrow(/\[services\.foldbase\] volumes #1: an absolute directory/)
+    expect(() => parseAppFile(withVolumes(`["data"]`))).toThrow(/volumes #1: an absolute directory/)
+    expect(() => parseAppFile(withVolumes(`["/a/../b"]`))).toThrow(/an absolute directory/)
+    expect(() => parseAppFile(withVolumes(`[{ path = "/d", size = "10GB" }]`))).toThrow(/size is bytes or a size such as "10GiB"/)
+    expect(() => parseAppFile(withVolumes(`[{ path = "/d", owner = "root" }]`))).toThrow(/owner is "uid:gid"/)
+    expect(() => parseAppFile(withVolumes(`[{ path = "/d", mode = "rw" }]`))).toThrow(/not a field of a volume: mode/)
+    expect(() => parseAppFile(withVolumes(`["/d", { path = "/d" }]`))).toThrow(/"\/d" twice/)
+    expect(() => parseAppFile(withVolumes(`"/data"`))).toThrow(/volumes must be a list/)
+    const eleven = JSON.stringify(Array.from({ length: 11 }, (_, i) => `/v${i}`))
+    expect(() => parseAppFile(withVolumes(eleven))).toThrow(/at most 10/)
+  })
+
+  it("a service with a volume runs one instance", () => {
+    expect(() => parseAppFile(withVolumes(`["/data"]`, "replicas = 2\n"))).toThrow(/has a volume, so it runs one instance; replicas = 2/)
+    expect(parseAppFile(withVolumes(`["/data"]`, "replicas = 1\n")).services[0]!.replicas).toBe(1)
+  })
+
+  it("goes on every declare, an empty list too: the broker replaces it", async () => {
+    const f = parseAppFile(withVolumes(`[{ path = "/data", size = 2048 }]`))
+    const client = fakeBroker()
+    await applyAppDeploy(client, f, await planAppDeploy(client, f, scope), "s1")
+    expect(client.declared.map((d) => (d as { volumes: unknown }).volumes)).toEqual([[{ path: "/data", size: 2048 }], [], []])
+  })
+
+  it("warns when the file drops a volume the app has", async () => {
+    const f = parseAppFile(CLAVE)
+    const apps: AppRow[] = [{
+      id: "app-fb", name: "foldbase", status: "deployed", image: null, public: false, expose: null, domain: null, hostname: null, jobId: null,
+      volumes: [{ path: "/data", sizeBytes: 1024 ** 3 }],
+    }]
+    const plan = await planAppDeploy(fakeBroker({ apps }), f, scope)
+    expect(plan.warnings).toContain("foldbase: /data is no longer in volumes; this deploy unmounts it (its data is kept)")
+  })
+})
 
 describe("flect deploy (services format)", () => {
   it("binds the resource by id and deploys each service with only its own uses, calls and vars", async () => {

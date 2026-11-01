@@ -10,6 +10,7 @@
  */
 
 import { looksSecret, type AppFile } from "./app-file.js"
+import { volumePath } from "./volume.js"
 import { BrokerError, resourceRef, type AppRow, type BindingKind, type BindingRow, type BrokerClient, type ResourceRow } from "./broker-client.js"
 
 type Client = Pick<
@@ -119,6 +120,15 @@ export async function planAppDeploy(
     else stops.push(`${msg}; add them to vars or secrets, or pass --yes to drop them`)
   }
 
+  // Volumes the file no longer has: the deploy unmounts them (the broker keeps their data).
+  for (const s of file.services) {
+    const existing = apps.find((a) => a.name === s.name)
+    const now = new Set(s.volumes.map(volumePath))
+    for (const v of existing?.volumes ?? []) {
+      if (!now.has(v.path)) warnings.push(`${s.key}: ${v.path} is no longer in volumes; this deploy unmounts it (its data is kept)`)
+    }
+  }
+
   // Warnings.
   for (const r of file.resources) {
     if (!file.services.some((s) => s.uses.includes(r.binding))) warnings.push(`${r.binding} is not in any service's uses`)
@@ -183,6 +193,8 @@ export async function applyAppDeploy(
         cpuMhz: s.cpuMhz,
         memoryMb: s.memoryMb,
         ...(s.health !== undefined ? { health: s.health === false ? null : s.health } : {}),
+        // Always sent: the broker replaces the list, so leaving it out would unmount them.
+        volumes: s.volumes,
       })
       declared.push({ s, id: d.id })
     } catch (err) {

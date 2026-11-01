@@ -16,6 +16,7 @@
 import { readFile } from "node:fs/promises"
 import { parse } from "smol-toml"
 import { FlectTomlError, healthOf, isAppFileDoc, type BindingKind, type HealthDecl } from "./config.js"
+import { MAX_VOLUMES, parseVolume } from "./volume.js"
 
 export interface ResourceEntry {
   /** Name in code: `env.db("DB")`. */
@@ -39,6 +40,8 @@ export interface ServiceEntry {
   cpuMhz?: number
   memoryMb?: number
   health?: HealthDecl | false
+  /** `volumes` as written (`"/data"` or `{ path, size, owner }`), checked; sent on every declare. */
+  volumes: unknown[]
   uses: string[]
   calls: string[]
   /** `[vars]` with this service's own on top (its value wins). */
@@ -80,6 +83,25 @@ function varsOf(v: unknown, where: string): Record<string, string> {
     out[k] = x
   }
   return out
+}
+
+/** `volumes`, checked the way the broker checks them (RFC-0022); kept as written. */
+function volumesOf(v: unknown, where: string, replicas: number | undefined): unknown[] {
+  if (v === undefined) return []
+  if (!Array.isArray(v)) throw new FlectTomlError(`${where} volumes must be a list: ["/data"] or [{ path = "/data", size = "10GiB" }]`)
+  if (v.length > MAX_VOLUMES) throw new FlectTomlError(`${where} has ${v.length} volumes; at most ${MAX_VOLUMES}`)
+  const paths = new Set<string>()
+  for (const [i, x] of v.entries()) {
+    const r = parseVolume(x)
+    if (!r.ok) throw new FlectTomlError(`${where} volumes #${i + 1}: ${r.message}`)
+    if (paths.has(r.volume.path)) throw new FlectTomlError(`${where} volumes: "${r.volume.path}" twice`)
+    paths.add(r.volume.path)
+  }
+  // A volume lives on one node and is written by one instance.
+  if (v.length > 0 && replicas !== undefined && replicas > 1) {
+    throw new FlectTomlError(`${where} has a volume, so it runs one instance; replicas = ${replicas} must be 0 or 1`)
+  }
+  return v
 }
 
 /** The closest name, for "did you mean". */
@@ -177,6 +199,9 @@ export function parseAppFile(text: string, path = "flect.toml"): AppFile {
       if (n in vars) throw new FlectTomlError(`${where}: "${n}" is both a var and a secret`)
     }
 
+    const replicas = num(s["replicas"])
+    const volumes = volumesOf(s["volumes"], where, replicas)
+
     return {
       key,
       name: str(s["name"]) ?? `${name}-${key}`,
@@ -184,10 +209,11 @@ export function parseAppFile(text: string, path = "flect.toml"): AppFile {
       port: num(s["port"]),
       public: bool(s["public"]),
       expose: str(s["expose"]),
-      replicas: num(s["replicas"]),
+      replicas,
       cpuMhz: num(s["cpuMhz"]),
       memoryMb: num(s["memoryMb"]),
       ...(s["health"] !== undefined ? { health: healthOf(s["health"], key) } : {}),
+      volumes,
       uses,
       calls,
       vars,

@@ -30,6 +30,7 @@ import { createRequire } from "node:module"
 import { Command } from "commander"
 import { loadFlectToml, parseFlectToml, type FlectProject } from "./config.js"
 import { readFlectFile, type AppFile } from "./app-file.js"
+import { volumePath } from "./volume.js"
 import { planAppDeploy, applyAppDeploy } from "./deploy-app.js"
 import { resolveScopePath } from "./scope-path.js"
 import { generateLocalConfig } from "./local.js"
@@ -259,6 +260,7 @@ function printAppFile(f: AppFile): void {
     if (s.uses.length) console.log(`           uses    ${s.uses.join(", ")}`)
     if (s.calls.length) console.log(`           calls   ${s.calls.join(", ")}`)
     if (s.secrets.length) console.log(`           secrets ${s.secrets.join(", ")}`)
+    if (s.volumes.length) console.log(`           volumes ${s.volumes.map(volumePath).join(", ")}`)
   }
 }
 

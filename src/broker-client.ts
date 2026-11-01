@@ -46,6 +46,8 @@ export interface AppRow {
   domain: string | null
   hostname: string | null
   jobId: string | null
+  /** RFC-0022; absent on a broker older than 0.8.16. */
+  volumes?: Array<{ path: string; sizeBytes: number }>
 }
 
 export interface PageRow {
@@ -298,6 +300,8 @@ export class BrokerClient {
     memoryMb?: number
     /** `null` disables health checking; omit for the default check. */
     health?: { path?: string; intervalSec?: number; timeoutSec?: number } | null
+    /** `"/data"` or `{ path, size, owner }` (RFC-0022). The broker replaces the list: omitted or `[]` unmounts them all. */
+    volumes?: unknown[]
   }): Promise<{ id: string; name: string; status: string }> {
     return this.call("POST", "/v1/apps", input)
   }
