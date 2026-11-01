@@ -4,7 +4,7 @@ import { resolveConnection, maskToken } from "./cli-config.js"
 import { generateLocalConfig } from "./local.js"
 import { redactConnection } from "./scaffold.js"
 import { scopeIdFromToken } from "./broker-client.js"
-import { deploy, deployApps, type DeployState, type DeployIO } from "./deploy.js"
+import { addressesOf, deploy, deployApps, type DeployState, type DeployIO } from "./deploy.js"
 import type { BrokerClient, ProviderRow } from "./broker-client.js"
 
 const CLAVE_TOML = `
@@ -375,5 +375,40 @@ describe("deployApps", () => {
     } as unknown as BrokerClient
     const steps = await deployApps(client, project)
     expect(steps[0]).toMatchObject({ app: "api", status: "failed", detail: "no image to deploy" })
+  })
+})
+
+describe("addressesOf (#61: print the address that answers)", () => {
+  const gen = "driptab-web-a1b2c3.up.flect.run"
+
+  it("an exposed service lives under the app's domain, not on its generated host", () => {
+    const urls = addressesOf("driptab.app", [
+      { public: true, hostname: gen },
+      { expose: "/v1/auth", hostname: "driptab-auth-service-d3058b.up.flect.run" },
+      { hostname: null },
+    ])
+    expect(urls).toEqual(["https://driptab.app", "https://driptab.app/v1/auth", undefined])
+  })
+
+  it("with no custom domain: the public service's generated host, and exposed paths under it", () => {
+    expect(addressesOf(undefined, [{ expose: "/api" }, { public: true, hostname: gen }])).toEqual([`https://${gen}/api`, `https://${gen}`])
+  })
+
+  it("an exposed path with no domain and no public service has no address", () => {
+    expect(addressesOf(undefined, [{ expose: "/api", hostname: "x.up.flect.run" }])).toEqual([undefined])
+  })
+
+  it("flect deploy (old format) reports it per app", async () => {
+    const project = parseFlectToml(
+      `[app]\nname="driptab"\ndomain="driptab.app"\n` +
+        `[[apps]]\nname="web"\nimage="img:1"\npublic=true\n` +
+        `[[apps]]\nname="auth"\nimage="img:2"\nexpose="/v1/auth"`,
+    )
+    const client = {
+      declareApp: async (input: { name: string }) => ({ id: `app-${input.name}`, name: input.name, status: "declared" }),
+      deployApp: async (id: string) => ({ status: "deployed", jobId: "j", hostname: `${id}-x.up.flect.run`, failureReason: null }),
+    } as unknown as BrokerClient
+    const steps = await deployApps(client, project)
+    expect(steps.map((s) => s.url)).toEqual(["https://driptab.app", "https://driptab.app/v1/auth"])
   })
 })

@@ -106,7 +106,7 @@ function fakeBroker(o: { bindings?: BindingRow[]; apps?: AppRow[]; kept?: Record
     async declareApp(i: { name: string }) { calls.push(["declareApp", i.name]); declared.push(i); return { id: `app-${++n}`, name: i.name, status: "declared" } },
     async deployApp(id: string, i: unknown) {
       calls.push(["deployApp", { id, ...(i as object) }])
-      return { status: "deployed", jobId: "j", hostname: null, failureReason: null }
+      return { status: "deployed", jobId: "j", hostname: null as string | null, failureReason: null }
     },
   }
   return client
@@ -237,6 +237,23 @@ describe("flect deploy (services format)", () => {
     const apps: AppRow[] = [{ id: "app-api", name: "clave-api", status: "deployed", image: null, public: false, expose: null, domain: null, hostname: null, jobId: null }]
     const plan = await planAppDeploy(fakeBroker({ apps, kept: { "app-api": ["JWT_SECRET"] }, secrets: { "clave-api": ["JWT_SECRET"] } }), f, scope)
     expect(plan.stops).toEqual([])
+  })
+})
+
+describe("deploy output (#61)", () => {
+  it("each service reports the address that answers: domain, expose path under it, nothing when private", async () => {
+    const f = parseAppFile(
+      CLAVE.replace(`scope = "platform/clave/production"`, `scope = "platform/clave/production"\ndomain = "clave.example"`)
+        .replace(`calls = ["foldbase"]`, `calls = ["foldbase"]\nexpose = "/v1"`),
+    )
+    const client = fakeBroker()
+    client.deployApp = async () => ({ status: "deployed", jobId: "j", hostname: "clave-x-d3058b.up.flect.run", failureReason: null })
+    const out = await applyAppDeploy(client, f, await planAppDeploy(client, f, scope), "s1")
+    expect(out.services.map((s) => [s.service, s.url])).toEqual([
+      ["foldbase", undefined],
+      ["api", "https://clave.example/v1"],
+      ["web", "https://clave.example"],
+    ])
   })
 })
 

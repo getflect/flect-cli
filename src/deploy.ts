@@ -16,7 +16,30 @@ export interface AppDeployStep {
   app: string
   status: "deployed" | "failed"
   hostname?: string | null
+  /** The address that answers: see `addressesOf`. */
+  url?: string
   detail?: string
+}
+
+/**
+ * The address each deployed app answers on, the way the broker routes it
+ * (RFC-0016). The broker's `hostname` is the generated `*.up.flect.run` host,
+ * which is only right for a public app without a custom domain:
+ *   public   https://<domain>, else https://<generated host>
+ *   expose   https://<domain><expose>, else under the public sibling's host
+ *   private  none
+ */
+export function addressesOf(
+  domain: string | undefined,
+  apps: Array<{ public?: boolean; expose?: string; hostname?: string | null }>,
+): Array<string | undefined> {
+  const pub = apps.find((a) => a.public)
+  const host = domain ?? pub?.hostname ?? undefined
+  return apps.map((a) => {
+    if (a.public) return host ? `https://${host}` : undefined
+    if (a.expose) return host ? `https://${host}${a.expose}` : undefined
+    return undefined
+  })
 }
 
 /**
@@ -73,6 +96,10 @@ export async function deployApps(client: BrokerClient, project: FlectProject): P
       steps.push({ app: app.name, status: "failed", detail: err instanceof Error ? err.message : String(err) })
     }
   }
+  const decl = steps.map((st) => ({ ...project.apps.find((a) => a.name === st.app)!, hostname: st.hostname }))
+  addressesOf(project.domain, decl).forEach((url, i) => {
+    if (url && steps[i]!.status === "deployed") steps[i]!.url = url
+  })
   return steps
 }
 

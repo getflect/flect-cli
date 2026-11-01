@@ -10,6 +10,7 @@
  */
 
 import { looksSecret, type AppFile } from "./app-file.js"
+import { addressesOf } from "./deploy.js"
 import { volumePath } from "./volume.js"
 import { BrokerError, resourceRef, type AppRow, type BindingKind, type BindingRow, type BrokerClient, type ResourceRow } from "./broker-client.js"
 
@@ -150,6 +151,8 @@ export interface ServiceStep {
   app: string
   status: "deployed" | "failed"
   hostname?: string | null
+  /** The address that answers: the custom domain, the expose path under it, or the generated host. */
+  url?: string
   detail?: string
 }
 
@@ -222,5 +225,9 @@ export async function applyAppDeploy(
       services.push({ service: s.key, app: s.name, status: "failed", detail: err instanceof Error ? err.message : String(err) })
     }
   }
+  const decl = services.map((st) => ({ ...file.services.find((x) => x.key === st.service)!, hostname: st.hostname }))
+  addressesOf(file.domain, decl).forEach((url, i) => {
+    if (url && services[i]!.status === "deployed") services[i]!.url = url
+  })
   return { binds, services }
 }

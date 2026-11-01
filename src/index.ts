@@ -232,7 +232,7 @@ program
       const appSteps = await deployApps(client, project)
       for (const s of appSteps) {
         const mark = s.status === "failed" ? "✗" : "✓"
-        const where = s.hostname ? ` → https://${s.hostname}` : ""
+        const where = s.url ? ` → ${s.url}` : ""
         console.log(`  ${mark} ${s.app.padEnd(16)} ${s.status}${where}${s.detail ? ` — ${s.detail}` : ""}`)
         if (s.status === "failed") failed = true
       }
@@ -300,7 +300,7 @@ async function deployAppFile(f: AppFile, opts: { broker?: string; token?: string
   }
   if (result.services.length > 0) console.log("services:")
   for (const s of result.services) {
-    const where = s.hostname ? ` → https://${s.hostname}` : ""
+    const where = s.url ? ` → ${s.url}` : ""
     console.log(`  ${s.status === "failed" ? "✗" : "✓"} ${s.service.padEnd(16)} ${s.status}${where}${s.detail ? ` — ${s.detail}` : ""}`)
     if (s.status === "failed") failed = true
   }
